@@ -30,7 +30,20 @@ jobs:
         run: |
           ZIP=$(find . -maxdepth 1 -name "*.zip" | head -1)
           unzip -o "$ZIP"
-
+      - name: Enable Compose
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("RoomExpenseSplitter/app/build.gradle.kts")
+          s = p.read_text()
+          if "buildFeatures" not in s:
+              s = s.replace(
+                  "android {\n",
+                  "android {\n    buildFeatures {\n        compose = true\n    }\n\n",
+                  1
+              )
+              p.write_text(s)
+          PY
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
