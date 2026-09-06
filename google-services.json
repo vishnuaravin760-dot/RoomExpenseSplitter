@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "536092306055",
+    "firebase_url": "https://roomexpensesplitter-47254-default-rtdb.firebaseio.com",
+    "project_id": "roomexpensesplitter-47254",
+    "storage_bucket": "roomexpensesplitter-47254.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:536092306055:android:0e77dc22b00de6a61da622",
+        "android_client_info": {
+          "package_name": "com.example.roomexpensesplitter"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAL2eM_fmfYqRv3K1tMTaz9oYFnwfJWErQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
