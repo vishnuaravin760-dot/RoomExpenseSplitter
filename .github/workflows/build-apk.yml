@@ -24,26 +24,41 @@ jobs:
         uses: android-actions/setup-android@v4
 
       - name: Install Android SDK
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Extract Android project
-        run:
-          ZIP=$(find . -maxdepth 1 -name "*.zip" | head -1)
-          unzip -o "$ZIP"
+        run: |
+          unzip -o "RoomExpenseSplitter_DELETE_NOTIFICATION_WITH_USER_V19.zip" -d extracted
+          ls -la extracted
+
+      - name: Find Android project
+        run: |
+          find extracted -name "settings.gradle.kts" -o -name "build.gradle.kts"
+
       - name: Enable Compose
         run: |
-          python3 - <<'PY'
+          PROJECT=$(dirname "$(find extracted -name settings.gradle.kts | head -1)")
+          echo "Project: $PROJECT"
+          
+          python3 - <<PY
           from pathlib import Path
-          p = Path("RoomExpenseSplitter/app/build.gradle.kts")
-          s = p.read_text()
-          if "buildFeatures" not in s:
-              s = s.replace(
-                  "android {\n",
-                  "android {\n    buildFeatures {\n        compose = true\n    }\n\n",
-                  1
-              )
-              p.write_text(s)
+          import os
+
+          project = Path("$PROJECT")
+          p = project / "build.gradle.kts"
+
+          if p.exists():
+              s = p.read_text()
+              if "buildFeatures" not in s and "android {" in s:
+                  s = s.replace(
+                      "android {\n",
+                      "android {\n    buildFeatures {\n        compose = true\n    }\n\n",
+                      1
+                  )
+                  p.write_text(s)
           PY
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -51,10 +66,12 @@ jobs:
 
       - name: Build APK
         run: |
-          gradle -p RoomExpenseSplitter assembleDebug --stacktrace
+          PROJECT=$(dirname "$(find extracted -name settings.gradle.kts | head -1)")
+          echo "Building: $PROJECT"
+          gradle -p "$PROJECT" assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: RoomExpenseSplitter-APK
-          path: RoomExpenseSplitter/app/build/outputs/apk/debug/app-debug.apk
+          path: extracted/**/app/build/outputs/apk/debug/app-debug.apk
