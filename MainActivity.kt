@@ -449,53 +449,66 @@ fun RoomExpenseApp(context: Context) {
                 ) {
                     Text("+")
                 }
-            },
-
-            bottomBar = {
-
-                NavigationBar {
-
-                    NavigationBarItem(
-                        selected = tab == 0,
-                        onClick = {
-                            tab = 0
-                        },
-                        icon = {
-                            Text("▦")
-                        },
-                        label = {
-                            Text("Tracker")
-                        }
-                    )
-
-                    NavigationBarItem(
-                        selected = tab == 1,
-                        onClick = {
-                            tab = 1
-                        },
-                        icon = {
-                            Text("≡")
-                        },
-                        label = {
-                            Text("Expenses")
-                        }
-                    )
-
-                    NavigationBarItem(
-                        selected = tab == 3,
-                        onClick = {
-                            tab = 3
-                        },
-                        icon = {
-                            Text("🍴")
-                        },
-                        label = {
-                            Text("Mess")
-                        }
-                    )
-                }
             }
 
+           bottomBar = {
+
+    NavigationBar {
+
+        NavigationBarItem(
+            selected = tab == 0,
+            onClick = {
+                tab = 0
+            },
+            icon = {
+                Text("▦")
+            },
+            label = {
+                Text("Tracker")
+            }
+        )
+
+        NavigationBarItem(
+            selected = tab == 1,
+            onClick = {
+                tab = 1
+            },
+            icon = {
+                Text("≡")
+            },
+            label = {
+                Text("Expenses")
+            }
+        )
+
+        NavigationBarItem(
+            selected = tab == 2,
+            onClick = {
+                tab = 2
+            },
+            icon = {
+                Text("👥")
+            },
+            label = {
+                Text("People")
+            }
+        )
+
+        NavigationBarItem(
+            selected = tab == 3,
+            onClick = {
+                tab = 3
+            },
+            icon = {
+                Text("🍴")
+            },
+            label = {
+                Text("Mess")
+            }
+        )
+    }
+           } 
+                            
         ) { padding ->
 
             when (tab) {
