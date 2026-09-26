@@ -22,6 +22,9 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.*
 import java.text.NumberFormat
 import java.time.LocalDate
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 data class Member(
@@ -479,15 +482,15 @@ fun RoomExpenseApp(context: Context) {
                     )
 
                     NavigationBarItem(
-                        selected = tab == 2,
+                        selected = tab == 3,
                         onClick = {
-                            tab = 2
+                            tab = 3
                         },
                         icon = {
-                            Text("👥")
+                            Text("🍴")
                         },
                         label = {
-                            Text("People")
+                            Text("Mess")
                         }
                     )
                 }
@@ -541,6 +544,12 @@ fun RoomExpenseApp(context: Context) {
 
                         store.saveMembers(updated)
                     }
+                }                    3 -> {
+                        MessScreen(
+                            Modifier.padding(padding),
+                            members,
+                            expenses
+                        )
                 }
             }
         }
@@ -1687,4 +1696,68 @@ private fun AddExpenseDialog(
             }
         }
     )
+}
+@Composable
+private fun MessScreen(
+    modifier: Modifier,
+    members: List<Member>,
+    expenses: List<Expense>
+) {
+    val dateFormatter = remember {
+        DateTimeFormatter.ofPattern("dd.MM.yyyy")
+    }
+    val messExpenses = expenses.filter { it.category == "Mess" }
+
+    LazyColumn(
+        modifier
+            .fillMaxSize()
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (messExpenses.isEmpty()) {
+            item {
+                Text("No mess entries yet.")
+            }
+        }
+        items(members) { member ->
+            val entries =
+                messExpenses
+                    .filter { it.payerId == member.id }
+                    .sortedBy { it.id }
+
+            if (entries.isNotEmpty()) {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            member.name,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        var running = 0.0
+                        entries.forEach { e ->
+                            running += e.amount
+                            val date =
+                                Instant.ofEpochMilli(e.id)
+                                    .atZone(ZoneId.systemDefault())
+                                    .toLocalDate()
+                                    .format(dateFormatter)
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                horizontalArrangement =
+                                    Arrangement.SpaceBetween
+                            ) {
+                                Text("$date  •  ${money(e.amount)}")
+                                Text(
+                                    "Total: ${money(running)}",
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
