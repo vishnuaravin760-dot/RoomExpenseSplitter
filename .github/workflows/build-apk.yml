@@ -38,17 +38,23 @@ jobs:
 
       - name: Update Android project files
         run: |
-          APP_DIR=$(dirname "$(find extracted -path "*/app/build.gradle.kts" | head -1)")
+          PROJECT=$(dirname "$(find extracted -name settings.gradle.kts | head -1)")
+          APP_DIR="$PROJECT/app"
 
+          echo "Project: $PROJECT"
           echo "App directory: $APP_DIR"
 
           cp MainActivity.kt "$APP_DIR/MainActivity.kt"
-          cp app/build.gradle.kts "$APP_DIR/build.gradle.kts"
+          cp build.gradle.kts "$APP_DIR/build.gradle.kts"
           cp google-services.json "$APP_DIR/google-services.json"
 
-          echo "Updated files:"
+          echo "Updated MainActivity:"
           ls -l "$APP_DIR/MainActivity.kt"
+
+          echo "Updated app Gradle:"
           ls -l "$APP_DIR/build.gradle.kts"
+
+          echo "Updated Firebase config:"
           ls -l "$APP_DIR/google-services.json"
 
       - name: Enable Compose
