@@ -60,6 +60,11 @@ jobs:
           echo "PROJECT=$PROJECT"
           ls -la "$PROJECT"
           find extracted -iname "gradlew*"
+          - name: Generate Gradle wrapper
+           run: |
+          PROJECT=$(dirname "$(find extracted -name settings.gradle.kts | head -1)")
+          cd "$PROJECT"
+          gradle wrapper --gradle-version 8.9
 
       - name: Build APK
         run: |
