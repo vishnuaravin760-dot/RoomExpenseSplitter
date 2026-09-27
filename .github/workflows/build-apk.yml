@@ -31,30 +31,40 @@ jobs:
         run: |
           unzip -o "RoomExpenseSplitter_DELETE_NOTIFICATION_WITH_USER_V19.zip" -d extracted
           ls -la extracted
-      - name: Update MainActivity
-        run: |
-          TARGET=$(find extracted -path "*/app/src/main/java/*/MainActivity.kt"| head -1)
-            echo "Replacing: $TARGET"
-            cp MainActivity.kt "$TARGET"
 
       - name: Find Android project
         run: |
           find extracted -name "settings.gradle.kts" -o -name "build.gradle.kts"
 
+      - name: Update Android project files
+        run: |
+          APP_DIR=$(dirname "$(find extracted -path "*/app/build.gradle.kts" | head -1)")
+
+          echo "App directory: $APP_DIR"
+
+          cp MainActivity.kt "$APP_DIR/MainActivity.kt"
+          cp app/build.gradle.kts "$APP_DIR/build.gradle.kts"
+          cp google-services.json "$APP_DIR/google-services.json"
+
+          echo "Updated files:"
+          ls -l "$APP_DIR/MainActivity.kt"
+          ls -l "$APP_DIR/build.gradle.kts"
+          ls -l "$APP_DIR/google-services.json"
+
       - name: Enable Compose
         run: |
           PROJECT=$(dirname "$(find extracted -name settings.gradle.kts | head -1)")
           echo "Project: $PROJECT"
-          
+
           python3 - <<PY
           from pathlib import Path
-          import os
 
           project = Path("$PROJECT")
           p = project / "build.gradle.kts"
 
           if p.exists():
               s = p.read_text()
+
               if "buildFeatures" not in s and "android {" in s:
                   s = s.replace(
                       "android {\n",
@@ -73,6 +83,7 @@ jobs:
         run: |
           PROJECT=$(dirname "$(find extracted -name settings.gradle.kts | head -1)")
           echo "Building: $PROJECT"
+
           gradle -p "$PROJECT" assembleDebug --stacktrace
 
       - name: Upload APK
