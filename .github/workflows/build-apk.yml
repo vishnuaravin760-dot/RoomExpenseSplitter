@@ -40,7 +40,7 @@ jobs:
           mkdir -p "$SRC_DIR"
 
           cp MainActivity.kt "$SRC_DIR/MainActivity.kt"
-          cp app/build.gradle.kts "$APP_DIR/build.gradle.kts"
+          cp build.gradle.kts "$APP_DIR/build.gradle.kts"
           cp google-services.json "$APP_DIR/google-services.json"
 
           echo "Project: $PROJECT"
