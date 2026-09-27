@@ -31,6 +31,11 @@ jobs:
         run: |
           unzip -o "RoomExpenseSplitter_DELETE_NOTIFICATION_WITH_USER_V19.zip" -d extracted
           ls -la extracted
+      - name: Update MainActivity
+        run: |
+          TARGET=$(find extracted -path "*/app/src/main/java/*/MainActivity.kt"| head -1)
+            echo "Replacing: $TARGET"
+            cp MainActivity.kt "$TARGET"
 
       - name: Find Android project
         run: |
