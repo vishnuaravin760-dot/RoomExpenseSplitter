@@ -449,7 +449,7 @@ fun RoomExpenseApp(context: Context) {
                 ) {
                     Text("+")
                 }
-            }
+            },
 
            bottomBar = {
 
