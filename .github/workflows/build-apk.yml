@@ -34,7 +34,9 @@ jobs:
 
       - name: Find Android project
         run: |
-          find extracted -name "settings.gradle.kts" -o -name "build.gradle.kts"
+          PROJECT=$(dirname "$(find extracted -name settings.gradle.kts | head -1)")
+          echo "Project: $PROJECT"
+          find "$PROJECT" -maxdepth 2 -type f -name "*.gradle.kts"
 
       - name: Update Android project files
         run: |
@@ -45,55 +47,62 @@ jobs:
           echo "App directory: $APP_DIR"
 
           cp MainActivity.kt "$APP_DIR/MainActivity.kt"
-          cp build.gradle.kts "$APP_DIR/build.gradle.kts"
+          cp app/build.gradle.kts "$APP_DIR/build.gradle.kts"
           cp google-services.json "$APP_DIR/google-services.json"
 
-          echo "Updated MainActivity:"
-          ls -l "$APP_DIR/MainActivity.kt"
+          echo "Files copied successfully."
 
-          echo "Updated app Gradle:"
-          ls -l "$APP_DIR/build.gradle.kts"
-
-          echo "Updated Firebase config:"
-          ls -l "$APP_DIR/google-services.json"
-
-      - name: Enable Compose
+      - name: Configure Gradle
         run: |
           PROJECT=$(dirname "$(find extracted -name settings.gradle.kts | head -1)")
-          echo "Project: $PROJECT"
+          APP_GRADLE="$PROJECT/app/build.gradle.kts"
+          ROOT_GRADLE="$PROJECT/build.gradle.kts"
 
           python3 - <<PY
           from pathlib import Path
 
-          project = Path("$PROJECT")
-          p = project / "build.gradle.kts"
+          root = Path("$ROOT_GRADLE")
+          app = Path("$APP_GRADLE")
 
-          if p.exists():
-              s = p.read_text()
+          # Add Google Services plugin version to root Gradle
+          if root.exists():
+              s = root.read_text()
 
-              if "buildFeatures" not in s and "android {" in s:
-                  s = s.replace(
-                      "android {\n",
-                      "android {\n    buildFeatures {\n        compose = true\n    }\n\n",
-                      1
-                  )
-                  p.write_text(s)
+              if "com.google.gms.google-services" not in s:
+                  if "plugins {" in s:
+                      s = s.replace(
+                          "plugins {",
+                          'plugins {\\n    id("com.google.gms.google-services") version "4.4.3" apply false',
+                          1
+                      )
+                  else:
+                      s = 'plugins {\\n    id("com.google.gms.google-services") version "4.4.3" apply false\\n}\\n\\n' + s
+
+                  root.write_text(s)
+
+          # Enable Compose in app module
+          if app.exists():
+              s = app.read_text()
+
+              if "buildFeatures" not in s:
+                  marker = 'android {'
+                  if marker in s:
+                      s = s.replace(
+                          marker,
+                          'android {\\n    buildFeatures {\\n        compose = true\\n    }',
+                          1
+                      )
+
+              app.write_text(s)
+
+          print("Gradle configuration updated.")
           PY
 
+          echo "ROOT GRADLE:"
+          cat "$ROOT_GRADLE"
+
+          echo "APP GRADLE:"
+          cat "$APP_GRADLE"
+
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
-
-      - name: Build APK
-        run: |
-          PROJECT=$(dirname "$(find extracted -name settings.gradle.kts | head -1)")
-          echo "Building: $PROJECT"
-
-          gradle -p "$PROJECT" assembleDebug --stacktrace
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: RoomExpenseSplitter-APK
-          path: extracted/**/app/build/outputs/apk/debug/app-debug.apk
+        uses: gradle
