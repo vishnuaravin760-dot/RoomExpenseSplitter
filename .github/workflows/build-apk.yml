@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -27,51 +28,67 @@ jobs:
         run: |
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Extract Android project
+      - name: Find and Extract Android project
         run: |
-          unzip -o "RoomExpenseSplitter_MESS_FIXED.zip" -d extracted
+          echo "Looking for ZIP file..."
 
-      - name: Update Android project
+          ZIP=$(find . -maxdepth 1 -type f -iname "*.zip" | head -1)
+
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: No ZIP file found in repository root."
+            echo "Repository files:"
+            ls -la
+            exit 1
+          fi
+
+          echo "Found ZIP: $ZIP"
+
+          unzip -o "$ZIP"
+
+          echo "Project extracted."
+
+          find . -maxdepth 3 -type f | sort | head -200
+
+      - name: Enable Compose
         run: |
-          PROJECT=$(dirname "$(find extracted -name settings.gradle.kts | head -1)")
-          APP_DIR="$PROJECT/app"
-          SRC_DIR="$APP_DIR/src/main/java/com/example/roomexpensesplitter"
+          python3 - <<'PY'
+          from pathlib import Path
 
-          mkdir -p "$SRC_DIR"
+          p = Path("RoomExpenseSplitter/app/build.gradle.kts")
 
-          cp MainActivity.kt "$SRC_DIR/MainActivity.kt"
-          cp build.gradle.kts "$APP_DIR/build.gradle.kts"
-          cp google-services.json "$APP_DIR/google-services.json"
+          if p.exists():
+              s = p.read_text()
 
-          echo "Project: $PROJECT"
-          echo "Source: $SRC_DIR"
+              if "buildFeatures" not in s:
+                  s = s.replace(
+                      "android {\n",
+                      """android {
+              buildFeatures {
+                  compose = true
+              }
 
-      - name: Configure Gradle
-        run: |
-          PROJECT=$(dirname "$(find extracted -name settings.gradle.kts | head -1)")
+          """,
+                      1
+                  )
 
-          sed -i '/plugins {/a\    id("com.google.gms.google-services") version "4.4.3" apply false' "$PROJECT/build.gradle.kts"
+              p.write_text(s)
+              print("Compose configuration updated.")
+          else:
+              print("build.gradle.kts not found.")
+              exit(1)
+          PY
 
-          sed -i '/android {/a\    buildFeatures {\n        compose = true\n    }' "$PROJECT/app/build.gradle.kts"
-
-      - name: Generate Gradle wrapper
-        run: |
-          PROJECT=$(dirname "$(find extracted -name settings.gradle.kts | head -1)")
-          cd "$PROJECT"
-          gradle wrapper --gradle-version 8.9
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
 
       - name: Build APK
         run: |
-          PROJECT=$(dirname "$(find extracted -name settings.gradle.kts | head -1)")
-
-          cd "$PROJECT"
-
-          chmod +x gradlew
-
-          ./gradlew assembleDebug --stacktrace
+          gradle -p RoomExpenseSplitter assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: RoomExpenseSplitter-APK
-          path: extracted/**/app/build/outputs/apk/debug/app-debug.apk
+          path: RoomExpenseSplitter/app/build/outputs/apk/debug/app-debug.apk
