@@ -5,14 +5,12 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.selection.toggleable
-import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.People
@@ -28,25 +26,33 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.text.NumberFormat
 import java.time.LocalDate
+import java.time.YearMonth
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 data class Member(val id: Int = 0, val name: String = "")
+
 data class DeletionNotice(
     val eventId: String,
-    val expenseId: Long,
-    val title: String,
-    val amount: Double,
-    val category: String,
-    val payerId: Int,
+    val expenseId: Long = 0L,
+    val title: String = "Expense",
+    val amount: Double = 0.0,
+    val category: String = "Other",
+    val payerId: Int = 0,
     val deletedById: Int = 0,
-    val deletedByName: String = ""
+    val deletedByName: String = "",
+    val kind: String = "expense",
+    val paymentDate: String = ""
 )
+
 data class MessPayment(
     val id: Long = 0L,
     val date: String = "",
     val amount: Double = 0.0,
-    val payerId: Int = 0
+    val payerId: Int = 0,
+    val month: String = ""
 )
+
 data class Expense(
     val id: Long = 0L,
     val title: String = "Expense",
@@ -58,25 +64,47 @@ data class Expense(
 )
 
 private val categories = listOf("Rent", "Gas / Water", "Lottery", "Mess", "Car", "Other")
+
 private val defaultMembers = listOf(
-    Member(1, "maneesh"), Member(2, "vishnu"), Member(3, "aneesh"),
-    Member(4, "githin"), Member(5, "binish"), Member(6, "shahul"), Member(7, "anoop")
+    Member(1, "maneesh"),
+    Member(2, "vishnu"),
+    Member(3, "aneesh"),
+    Member(4, "githin"),
+    Member(5, "binish"),
+    Member(6, "shahul"),
+    Member(7, "anoop")
 )
 
-/**
- * Shared cloud store. Every installed copy of the app reads/writes the same
- * household/default path, so an expense added on one phone appears on all
- * other phones in real time.
- */
+private val messMonthFormatter = DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH)
+private val messDateFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy")
+
+private fun monthKey(yearMonth: YearMonth): String = yearMonth.toString()
+private fun monthLabel(key: String): String = try {
+    YearMonth.parse(key).format(messMonthFormatter)
+} catch (_: Throwable) {
+    key
+}
+
+private fun monthFromDate(date: String): String {
+    return try {
+        YearMonth.from(LocalDate.parse(date, messDateFormatter)).toString()
+    } catch (_: Throwable) {
+        LocalDate.now().withDayOfMonth(1).toString().substring(0, 7)
+    }
+}
+
+private fun availableMessMonths(payments: List<MessPayment>): List<String> {
+    val current = YearMonth.now()
+    val values = linkedSetOf<String>()
+    values += current.toString()
+    payments.forEach {
+        values += if (it.month.isNotBlank()) it.month else monthFromDate(it.date)
+    }
+    for (i in 1..24) values += current.minusMonths(i.toLong()).toString()
+    return values.sortedDescending()
+}
+
 class FirebaseExpenseStore(private val context: Context, private val roomCode: String) {
-    // Direct Realtime Database REST sync. No Firebase Authentication call is
-    // needed, so a DNS problem resolving identitytoolkit.googleapis.com cannot
-    // block adding expenses. The database rules must permit read/write access
-    // for this shared household path.
-    // Try both Firebase Realtime Database hostnames. Some mobile networks/DNS
-    // resolvers fail to resolve the legacy *.firebaseio.com hostname even though
-    // the database itself is reachable. The active URL is remembered after a
-    // successful request, so all reads/writes use the working endpoint.
     private val databaseUrls = listOf(
         "https://roomexpensesplitter-47254-default-rtdb.firebaseio.com",
         "https://roomexpensesplitter-47254-default-rtdb.firebasedatabase.app"
@@ -87,15 +115,18 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
     private var onDataCallback: ((List<Member>, List<Expense>, List<DeletionNotice>, List<MessPayment>) -> Unit)? = null
     private var onReadyCallback: (() -> Unit)? = null
     private var onErrorCallback: ((String) -> Unit)? = null
+
     private val pendingExpenses = java.util.Collections.synchronizedList(mutableListOf<Expense>())
     private val pendingDeletes = java.util.Collections.synchronizedList(mutableListOf<Long>())
     private val pendingMembers = java.util.Collections.synchronizedList(mutableListOf<List<Member>>())
     private val pendingDeletionEvents = java.util.Collections.synchronizedList(mutableListOf<DeletionNotice>())
-    // IDs currently being written/deleted. While a write is in flight, an older
-    // cloud poll must not make the local UI briefly show stale data again.
-    private val pendingExpenseIds = java.util.Collections.synchronizedSet(mutableSetOf<Long>())
     private val pendingMessPayments = java.util.Collections.synchronizedList(mutableListOf<MessPayment>())
+    private val pendingMessDeletes = java.util.Collections.synchronizedList(mutableListOf<Long>())
+
+    private val pendingExpenseIds = java.util.Collections.synchronizedSet(mutableSetOf<Long>())
     private val pendingDeleteIds = java.util.Collections.synchronizedSet(mutableSetOf<Long>())
+    private val pendingMessPaymentIds = java.util.Collections.synchronizedSet(mutableSetOf<Long>())
+    private val pendingMessDeleteIds = java.util.Collections.synchronizedSet(mutableSetOf<Long>())
 
     fun start(
         onData: (List<Member>, List<Expense>, List<DeletionNotice>, List<MessPayment>) -> Unit,
@@ -117,7 +148,12 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
             copy
         }
         messToSave.forEach { p ->
-            try { putMessPayment(p) } catch (_: Throwable) { pendingMessPayments.add(p) }
+            try {
+                putMessPayment(p)
+                pendingMessPaymentIds.remove(p.id)
+            } catch (_: Throwable) {
+                pendingMessPayments.add(p)
+            }
         }
 
         val expensesToSave = synchronized(pendingExpenses) {
@@ -126,7 +162,12 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
             copy
         }
         expensesToSave.forEach { e ->
-            try { putExpense(e); pendingExpenseIds.remove(e.id) } catch (_: Throwable) { pendingExpenses.add(e) }
+            try {
+                putExpense(e)
+                pendingExpenseIds.remove(e.id)
+            } catch (_: Throwable) {
+                pendingExpenses.add(e)
+            }
         }
 
         val deletionEventsToSave = synchronized(pendingDeletionEvents) {
@@ -135,7 +176,8 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
             copy
         }
         deletionEventsToSave.forEach { notice ->
-            try { putDeletionEvent(notice) } catch (_: Throwable) { pendingDeletionEvents.add(notice) }
+            try { putDeletionEvent(notice) }
+            catch (_: Throwable) { pendingDeletionEvents.add(notice) }
         }
 
         val deletesToApply = synchronized(pendingDeletes) {
@@ -144,13 +186,32 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
             copy
         }
         deletesToApply.forEach { id ->
-            try { httpDelete("${baseUrl()}/households/$roomCode/expenses/$id.json"); pendingDeleteIds.remove(id) }
-            catch (_: Throwable) { pendingDeletes.add(id) }
+            try {
+                httpDelete("${baseUrl()}/households/$roomCode/expenses/$id.json")
+                pendingDeleteIds.remove(id)
+            } catch (_: Throwable) {
+                pendingDeletes.add(id)
+            }
+        }
+
+        val messDeletesToApply = synchronized(pendingMessDeletes) {
+            val copy = pendingMessDeletes.toList()
+            pendingMessDeletes.clear()
+            copy
+        }
+        messDeletesToApply.forEach { id ->
+            try {
+                httpDelete("${baseUrl()}/households/$roomCode/messPayments/$id.json")
+                pendingMessDeleteIds.remove(id)
+            } catch (_: Throwable) {
+                pendingMessDeletes.add(id)
+            }
         }
 
         val latestMembers = synchronized(pendingMembers) { pendingMembers.removeLastOrNull() }
         if (latestMembers != null) {
-            try { putMembers(latestMembers) } catch (_: Throwable) { pendingMembers.add(latestMembers) }
+            try { putMembers(latestMembers) }
+            catch (_: Throwable) { pendingMembers.add(latestMembers) }
         }
     }
 
@@ -163,27 +224,32 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
                 val (members, cloudExpenses) = parseRoot(json)
                 val messPayments = parseMessPayments(json)
                 val deletionNotices = parseDeletionNotices(json)
-                val expenses = cloudExpenses.filterNot { pendingDeleteIds.contains(it.id) }
+
+                val expenses = cloudExpenses
+                    .filterNot { pendingDeleteIds.contains(it.id) }
                     .let { cloud ->
                         val byId = cloud.associateBy { it.id }.toMutableMap()
                         synchronized(pendingExpenses) { pendingExpenses.forEach { byId[it.id] = it } }
-                        synchronized(pendingExpenseIds) { pendingExpenseIds.forEach { id ->
-                            // Keep any locally pending record until its PUT succeeds.
-                            synchronized(pendingExpenses) { pendingExpenses.firstOrNull { it.id == id }?.let { byId[id] = it } }
-                        } }
                         byId.values.sortedBy { it.id }
                     }
+
+                val visibleMessPayments = messPayments
+                    .filterNot { pendingMessDeleteIds.contains(it.id) }
+                    .let { cloud ->
+                        val byId = cloud.associateBy { it.id }.toMutableMap()
+                        synchronized(pendingMessPayments) { pendingMessPayments.forEach { byId[it.id] = it } }
+                        byId.values.sortedBy { it.id }
+                    }
+
                 handler.post {
-                    onDataCallback?.invoke(members, expenses, deletionNotices, messPayments)
+                    onDataCallback?.invoke(members, expenses, deletionNotices, visibleMessPayments)
                     if (!announcedReady) {
                         announcedReady = true
                         onReadyCallback?.invoke()
                     }
                 }
-            } catch (t: Throwable) {
+            } catch (_: Throwable) {
                 handler.post {
-                    // Do not block the Add dialog with a Firebase error popup.
-                    // Keep the app usable offline and retry automatically.
                     onErrorCallback?.invoke("Sync temporarily unavailable. Local changes will retry automatically.")
                 }
             }
@@ -192,10 +258,6 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
     }
 
     private fun putExpense(e: Expense) {
-        // Store Mess participants as an explicit JSON array.
-        // This preserves an exact selection such as 3/7, and also preserves
-        // an intentional empty selection without it being confused with
-        // legacy records that had no participant field.
         val participants = org.json.JSONArray().apply {
             e.participants.sorted().forEach { put(it) }
         }
@@ -217,6 +279,7 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
             put("date", p.date)
             put("amount", p.amount)
             put("payerId", p.payerId)
+            put("month", if (p.month.isNotBlank()) p.month else monthFromDate(p.date))
         }
         httpPut("${baseUrl()}/households/$roomCode/messPayments/${p.id}.json", data.toString())
     }
@@ -231,6 +294,23 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
             }
         }
         httpPut("${baseUrl()}/households/$roomCode/members.json", data.toString())
+    }
+
+    private fun putDeletionEvent(notice: DeletionNotice) {
+        val data = org.json.JSONObject().apply {
+            put("eventId", notice.eventId)
+            put("expenseId", notice.expenseId)
+            put("title", notice.title)
+            put("amount", notice.amount)
+            put("category", notice.category)
+            put("payerId", notice.payerId)
+            put("deletedById", notice.deletedById)
+            put("deletedByName", notice.deletedByName)
+            put("kind", notice.kind)
+            put("paymentDate", notice.paymentDate)
+            put("deletedAt", System.currentTimeMillis())
+        }
+        httpPut("${baseUrl()}/households/$roomCode/deletionEvents/${notice.eventId}.json", data.toString())
     }
 
     private fun baseUrl(): String = activeDatabaseUrl ?: databaseUrls.first()
@@ -323,6 +403,7 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
             }
         }
         val finalMembers = members.sortedBy { it.id }.ifEmpty { defaultMembers }
+
         val expenses = mutableListOf<Expense>()
         root.optJSONObject("expenses")?.let { obj ->
             obj.keys().forEach { key ->
@@ -330,8 +411,6 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
                 val id = item.optLong("id", key.toLongOrNull() ?: 0L)
                 if (id == 0L) return@forEach
                 val participants = mutableSetOf<Int>()
-                // V15 format: explicit JSON array. Also read the older object
-                // format so existing shared expenses continue to work.
                 item.optJSONArray("participants")?.let { pa ->
                     for (i in 0 until pa.length()) {
                         val pid = pa.optInt(i, 0)
@@ -348,10 +427,19 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
                     }
                 }
                 val amount = item.optDouble("amount", 0.0)
-                val month = item.optString("month", LocalDate.now().toString().substring(0, 7))
-                expenses += Expense(id, item.optString("title", "Expense"), amount,
-                    item.optInt("payerId", 0), participants, month,
-                    item.optString("category", "Other"))
+                val month = item.optString(
+                    "month",
+                    LocalDate.now().toString().substring(0, 7)
+                )
+                expenses += Expense(
+                    id,
+                    item.optString("title", "Expense"),
+                    amount,
+                    item.optInt("payerId", 0),
+                    participants,
+                    month,
+                    item.optString("category", "Other")
+                )
             }
         }
         return finalMembers to expenses.sortedBy { it.id }
@@ -369,25 +457,15 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
                 val amount = item.optDouble("amount", 0.0)
                 val payerId = item.optInt("payerId", 0)
                 val date = item.optString("date", "")
-                if (id != 0L && amount > 0.0 && payerId != 0) result += MessPayment(id, date, amount, payerId)
+                val month = item.optString("month", "").ifBlank { monthFromDate(date) }
+                if (id != 0L && amount > 0.0 && payerId != 0) {
+                    result += MessPayment(id, date, amount, payerId, month)
+                }
             }
             result.sortedBy { it.id }
-        } catch (_: Throwable) { emptyList() }
-    }
-
-    private fun putDeletionEvent(notice: DeletionNotice) {
-        val data = org.json.JSONObject().apply {
-            put("eventId", notice.eventId)
-            put("expenseId", notice.expenseId)
-            put("title", notice.title)
-            put("amount", notice.amount)
-            put("category", notice.category)
-            put("payerId", notice.payerId)
-            put("deletedById", notice.deletedById)
-            put("deletedByName", notice.deletedByName)
-            put("deletedAt", System.currentTimeMillis())
+        } catch (_: Throwable) {
+            emptyList()
         }
-        httpPut("${baseUrl()}/households/$roomCode/deletionEvents/${notice.eventId}.json", data.toString())
     }
 
     private fun parseDeletionNotices(json: String): List<DeletionNotice> {
@@ -399,16 +477,18 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
             obj.keys().forEach { key ->
                 val item = obj.optJSONObject(key) ?: return@forEach
                 val eventId = item.optString("eventId", key)
-                val expenseId = item.optLong("expenseId", 0L)
-                if (eventId.isNotBlank() && expenseId != 0L) {
+                if (eventId.isNotBlank()) {
                     result += DeletionNotice(
-                        eventId, expenseId,
-                        item.optString("title", "Expense"),
-                        item.optDouble("amount", 0.0),
-                        item.optString("category", "Other"),
-                        item.optInt("payerId", 0),
-                        item.optInt("deletedById", 0),
-                        item.optString("deletedByName", "")
+                        eventId = eventId,
+                        expenseId = item.optLong("expenseId", 0L),
+                        title = item.optString("title", "Expense"),
+                        amount = item.optDouble("amount", 0.0),
+                        category = item.optString("category", "Other"),
+                        payerId = item.optInt("payerId", 0),
+                        deletedById = item.optInt("deletedById", 0),
+                        deletedByName = item.optString("deletedByName", ""),
+                        kind = item.optString("kind", "expense"),
+                        paymentDate = item.optString("paymentDate", "")
                     )
                 }
             }
@@ -416,6 +496,30 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
         } catch (_: Throwable) {
             emptyList()
         }
+    }
+
+    fun saveExpense(e: Expense) {
+        pendingExpenseIds.add(e.id)
+        pendingExpenses.add(e)
+        Thread {
+            try {
+                putExpense(e)
+                pendingExpenses.removeIf { it.id == e.id }
+                pendingExpenseIds.remove(e.id)
+            } catch (_: Throwable) {}
+        }.start()
+    }
+
+    fun saveMessPayment(payment: MessPayment) {
+        pendingMessPaymentIds.add(payment.id)
+        pendingMessPayments.add(payment)
+        Thread {
+            try {
+                putMessPayment(payment)
+                pendingMessPayments.removeIf { it.id == payment.id }
+                pendingMessPaymentIds.remove(payment.id)
+            } catch (_: Throwable) {}
+        }.start()
     }
 
     fun deleteExpense(e: Expense, deletedById: Int, deletedByName: String) {
@@ -428,7 +532,8 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
             category = e.category,
             payerId = e.payerId,
             deletedById = deletedById,
-            deletedByName = deletedByName
+            deletedByName = deletedByName,
+            kind = "expense"
         )
         pendingDeletes.add(e.id)
         Thread {
@@ -436,33 +541,35 @@ class FirebaseExpenseStore(private val context: Context, private val roomCode: S
                 httpDelete("${baseUrl()}/households/$roomCode/expenses/${e.id}.json")
                 pendingDeletes.remove(e.id)
                 pendingDeleteIds.remove(e.id)
-                try {
-                    putDeletionEvent(notice)
-                } catch (_: Throwable) {
-                    // The expense is already deleted; retry only the notification event.
-                    pendingDeletionEvents.add(notice)
-                }
-            } catch (_: Throwable) {
-                // pollLoop will retry the delete. No deletion notification is emitted
-                // until the delete actually succeeds.
-            }
+                try { putDeletionEvent(notice) }
+                catch (_: Throwable) { pendingDeletionEvents.add(notice) }
+            } catch (_: Throwable) {}
         }.start()
     }
 
-    fun saveExpense(e: Expense) {
-        pendingExpenseIds.add(e.id)
-        pendingExpenses.add(e)
+    fun deleteMessPayment(p: MessPayment, deletedById: Int, deletedByName: String) {
+        pendingMessDeleteIds.add(p.id)
+        val notice = DeletionNotice(
+            eventId = "${System.currentTimeMillis()}_mess_${p.id}",
+            expenseId = p.id,
+            title = "Mess",
+            amount = p.amount,
+            category = "Mess",
+            payerId = p.payerId,
+            deletedById = deletedById,
+            deletedByName = deletedByName,
+            kind = "messPayment",
+            paymentDate = p.date
+        )
+        pendingMessDeletes.add(p.id)
         Thread {
-            try { putExpense(e); pendingExpenses.removeIf { it.id == e.id }; pendingExpenseIds.remove(e.id) }
-            catch (_: Throwable) { /* pollLoop will retry */ }
-        }.start()
-    }
-
-    fun saveMessPayment(payment: MessPayment) {
-        pendingMessPayments.add(payment)
-        Thread {
-            try { putMessPayment(payment); pendingMessPayments.removeIf { it.id == payment.id } }
-            catch (_: Throwable) { /* pollLoop will retry */ }
+            try {
+                httpDelete("${baseUrl()}/households/$roomCode/messPayments/${p.id}.json")
+                pendingMessDeletes.remove(p.id)
+                pendingMessDeleteIds.remove(p.id)
+                try { putDeletionEvent(notice) }
+                catch (_: Throwable) { pendingDeletionEvents.add(notice) }
+            } catch (_: Throwable) {}
         }.start()
     }
 
@@ -493,10 +600,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private fun money(v: Double): String = NumberFormat.getCurrencyInstance(Locale("en", "IN")).apply {
-    maximumFractionDigits = 2
-    minimumFractionDigits = 2
-}.format(v)
+private fun money(v: Double): String =
+    NumberFormat.getCurrencyInstance(Locale("en", "IN")).apply {
+        maximumFractionDigits = 2
+        minimumFractionDigits = 2
+    }.format(v)
 
 private fun categoryNet(
     expenses: List<Expense>,
@@ -505,31 +613,31 @@ private fun categoryNet(
     allMemberIds: Set<Int> = emptySet()
 ): Double {
     var value = 0.0
+
     expenses.filter { it.category == category }.forEach { e ->
-        if (e.category == "Mess") {
-            // Mess uses exactly the saved participant list. Empty means no one shares it.
-            val participantIds = e.participants
-            if (participantIds.isNotEmpty() && memberId in participantIds) {
+        val participantIds =
+            if (e.participants.isNotEmpty()) e.participants else allMemberIds
+
+        if (category == "Mess" || category == "Car" || category == "Other") {
+            if (participantIds.contains(memberId)) {
                 value += e.amount / participantIds.size.toDouble()
             }
-            // Payer paid the full bill, so credit that payment back.
-            if (memberId == e.payerId) value -= e.amount
+            if (e.payerId == memberId) value -= e.amount
         } else {
-            // Fixed expenses (Rent, Gas/Water, Lottery, Car, Other) are per-person.
-            // Older synced records may have an empty participant list; treat those
-            // records as applying to every current member as the UI does for new
-            // fixed expenses. This keeps existing expenses visible in Tracker.
-            val participantIds = if (e.participants.isNotEmpty()) e.participants else allMemberIds
-            if (memberId in participantIds) value += e.amount
+            if (participantIds.contains(memberId)) value += e.amount
         }
     }
+
     return value
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RoomExpenseApp(context: Context) {
-    val prefs = remember { context.getSharedPreferences("room_expenses", Context.MODE_PRIVATE) }
+    val prefs = remember {
+        context.getSharedPreferences("room_expenses", Context.MODE_PRIVATE)
+    }
+
     var roomCode by remember { mutableStateOf(prefs.getString("room_code", "") ?: "") }
     var codeInput by remember { mutableStateOf("") }
     var store by remember { mutableStateOf<FirebaseExpenseStore?>(null) }
@@ -543,12 +651,22 @@ fun RoomExpenseApp(context: Context) {
     var showRoomLogin by remember { mutableStateOf(roomCode.isBlank()) }
     var showRoomCode by remember { mutableStateOf(false) }
     var showCurrentUser by remember { mutableStateOf(false) }
-    var currentUserId by remember { mutableIntStateOf(prefs.getInt("current_user_id_$roomCode", 0)) }
+    var currentUserId by remember {
+        mutableIntStateOf(prefs.getInt("current_user_id_$roomCode", 0))
+    }
     val month = LocalDate.now().toString().substring(0, 7)
     val monthExpenses = expenses.filter { it.month == month }
+
     var showCar by remember { mutableStateOf(false) }
     var deletionNotification by remember { mutableStateOf<String?>(null) }
-    var seenDeletionEvents by remember { mutableStateOf(prefs.getStringSet("seen_deletion_events", emptySet()) ?: emptySet()) }
+
+    var seenDeletionEvents by remember {
+        mutableStateOf(
+            prefs.getStringSet("seen_deletion_events_$roomCode", emptySet())
+                ?: emptySet()
+        )
+    }
+
     var hasInitialSync by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -560,48 +678,84 @@ fun RoomExpenseApp(context: Context) {
     fun connectToRoom(code: String) {
         val clean = code.filter { it.isDigit() }.take(6)
         if (clean.length != 6) return
+
         store?.stop()
         store = FirebaseExpenseStore(context.applicationContext, clean)
         members = defaultMembers
+
         val savedUserId = prefs.getInt("current_user_id_$clean", 0)
-        currentUserId = if (defaultMembers.any { it.id == savedUserId }) savedUserId else defaultMembers.firstOrNull()?.id ?: 0
-        if (currentUserId != 0) prefs.edit().putInt("current_user_id_$clean", currentUserId).apply()
+        currentUserId =
+            if (defaultMembers.any { it.id == savedUserId }) savedUserId
+            else defaultMembers.firstOrNull()?.id ?: 0
+
+        if (currentUserId != 0) {
+            prefs.edit().putInt("current_user_id_$clean", currentUserId).apply()
+        }
+
         expenses = emptyList()
+        messPayments = emptyList()
         firebaseReady = false
         errorText = null
         hasInitialSync = false
+
+        val savedSeen =
+            prefs.getStringSet("seen_deletion_events_$clean", emptySet()) ?: emptySet()
+        seenDeletionEvents = savedSeen
+
         roomCode = clean
         prefs.edit().putString("room_code", clean).apply()
         showRoomLogin = false
+
         store?.start(
             onData = { cloudMembers, cloudExpenses, deletionEvents, cloudMessPayments ->
                 members = cloudMembers
+
                 if (cloudMembers.none { it.id == currentUserId }) {
                     currentUserId = cloudMembers.firstOrNull()?.id ?: 0
-                    if (currentUserId != 0) prefs.edit().putInt("current_user_id_$roomCode", currentUserId).apply()
-                }
-                expenses = cloudExpenses
-                messPayments = cloudMessPayments
-                if (!hasInitialSync) {
-                    val allIds = deletionEvents.map { it.eventId }.toSet()
-                    seenDeletionEvents = allIds
-                    prefs.edit().putStringSet("seen_deletion_events", allIds).apply()
-                    hasInitialSync = true
-                } else {
-                    val fresh = deletionEvents.filter { it.eventId !in seenDeletionEvents }.maxByOrNull { it.eventId }
-                    if (fresh != null) {
-                        val payerName = members.firstOrNull { it.id == fresh.payerId }?.name
-                        val deleterName = fresh.deletedByName.ifBlank { members.firstOrNull { it.id == fresh.deletedById }?.name ?: "Unknown" }
-                        deletionNotification = if (payerName != null && fresh.payerId != 0) {
-                            "🔔 $deleterName deleted ${fresh.category} ₹${String.format(Locale.US, "%.2f", fresh.amount)} (paid by $payerName)"
-                        } else {
-                            "🔔 $deleterName deleted ${fresh.category} ₹${String.format(Locale.US, "%.2f", fresh.amount)}"
-                        }
-                        val updatedSeen = (seenDeletionEvents + deletionEvents.map { it.eventId }).toList().takeLast(100).toSet()
-                        seenDeletionEvents = updatedSeen
-                        prefs.edit().putStringSet("seen_deletion_events", updatedSeen).apply()
+                    if (currentUserId != 0) {
+                        prefs.edit()
+                            .putInt("current_user_id_$roomCode", currentUserId)
+                            .apply()
                     }
                 }
+
+                expenses = cloudExpenses
+                messPayments = cloudMessPayments
+
+                // Important: do NOT mark all current events as seen on first sync.
+                // Events are kept in SharedPreferences, so a phone that was offline
+                // when a deletion happened can still show the notification later.
+                val freshEvents = if (!hasInitialSync) {
+                    deletionEvents.filter { it.eventId !in seenDeletionEvents }
+                } else {
+                    deletionEvents.filter { it.eventId !in seenDeletionEvents }
+                }
+
+                val fresh = freshEvents.maxByOrNull { it.eventId }
+                if (fresh != null) {
+                    val deleterName = fresh.deletedByName.ifBlank {
+                        cloudMembers.firstOrNull { it.id == fresh.deletedById }?.name ?: "Unknown"
+                    }
+
+                    deletionNotification = if (fresh.kind == "messPayment") {
+                        "🔔 $deleterName deleted Mess ${money(fresh.amount)}${if (fresh.paymentDate.isNotBlank()) " • ${fresh.paymentDate}" else ""} (paid by ${cloudMembers.firstOrNull { it.id == fresh.payerId }?.name ?: "Unknown"})"
+                    } else {
+                        "🔔 $deleterName deleted ${fresh.category} ${money(fresh.amount)}"
+                    }
+
+                    val updatedSeen =
+                        (seenDeletionEvents + deletionEvents.map { it.eventId })
+                            .toList()
+                            .takeLast(200)
+                            .toSet()
+
+                    seenDeletionEvents = updatedSeen
+                    prefs.edit()
+                        .putStringSet("seen_deletion_events_$roomCode", updatedSeen)
+                        .apply()
+                }
+
+                if (!hasInitialSync) hasInitialSync = true
             },
             onReady = { firebaseReady = true },
             onError = { if (!firebaseReady) errorText = null }
@@ -609,7 +763,9 @@ fun RoomExpenseApp(context: Context) {
     }
 
     LaunchedEffect(roomCode) {
-        if (roomCode.length == 6 && store == null && !showRoomLogin) connectToRoom(roomCode)
+        if (roomCode.length == 6 && store == null && !showRoomLogin) {
+            connectToRoom(roomCode)
+        }
     }
 
     if (showRoomLogin) {
@@ -620,13 +776,23 @@ fun RoomExpenseApp(context: Context) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Text("🏠 HOUSEHOLD EXPENSE TRACKER 💰", fontWeight = FontWeight.Bold, fontSize = 24.sp, textAlign = TextAlign.Center)
+                    Text(
+                        "🏠 HOUSEHOLD EXPENSE TRACKER 💰",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 24.sp,
+                        textAlign = TextAlign.Center
+                    )
                     Spacer(Modifier.height(12.dp))
-                    Text("Create or join your household", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Create or join your household",
+                        style = MaterialTheme.typography.titleMedium
+                    )
                     Spacer(Modifier.height(20.dp))
                     OutlinedTextField(
                         value = codeInput,
-                        onValueChange = { codeInput = it.filter(Char::isDigit).take(6) },
+                        onValueChange = {
+                            codeInput = it.filter(Char::isDigit).take(6)
+                        },
                         label = { Text("6-digit household code") },
                         placeholder = { Text("Example: 482731") },
                         singleLine = true
@@ -635,16 +801,26 @@ fun RoomExpenseApp(context: Context) {
                     Button(
                         enabled = codeInput.length == 6,
                         onClick = { connectToRoom(codeInput) }
-                    ) { Text("Join Household") }
+                    ) {
+                        Text("Join Household")
+                    }
                     Spacer(Modifier.height(12.dp))
-                    OutlinedButton(onClick = {
-                        val newCode = (100000..999999).random().toString()
-                        codeInput = newCode
-                        connectToRoom(newCode)
-                        showRoomCode = true
-                    }) { Text("Create New Household") }
+                    OutlinedButton(
+                        onClick = {
+                            val newCode = (100000..999999).random().toString()
+                            codeInput = newCode
+                            connectToRoom(newCode)
+                            showRoomCode = true
+                        }
+                    ) {
+                        Text("Create New Household")
+                    }
                     Spacer(Modifier.height(16.dp))
-                    Text("Use the same code on every phone. Everyone with the same code shares the same expenses.", textAlign = TextAlign.Center, fontSize = 13.sp)
+                    Text(
+                        "Use the same code on every phone. Everyone with the same code shares the same expenses.",
+                        textAlign = TextAlign.Center,
+                        fontSize = 13.sp
+                    )
                 }
             }
         }
@@ -658,87 +834,221 @@ fun RoomExpenseApp(context: Context) {
                 TopAppBar(
                     title = {
                         Column {
-                            Text("🏠 HOUSEHOLD EXPENSE TRACKER 💰", fontWeight = FontWeight.Bold)
                             Text(
-                                if (firebaseReady) "Household $roomCode • Live Sync ON" else "Household $roomCode • Connecting / retrying…",
+                                "🏠 HOUSEHOLD EXPENSE TRACKER 💰",
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                if (firebaseReady)
+                                    "Household $roomCode • Live Sync ON"
+                                else
+                                    "Household $roomCode • Connecting / retrying…",
                                 style = MaterialTheme.typography.labelSmall
                             )
                         }
                     },
                     actions = {
                         TextButton(onClick = { showCurrentUser = true }) {
-                            val youName = members.firstOrNull { it.id == currentUserId }?.name ?: "You"
+                            val youName =
+                                members.firstOrNull { it.id == currentUserId }?.name ?: "You"
                             Text("You: $youName")
                         }
-                        TextButton(onClick = { showRoomCode = true }) { Text("CODE") }
-                        TextButton(onClick = { firebaseReady = false; store?.stop(); store = null; connectToRoom(roomCode) }) {
+                        TextButton(onClick = { showRoomCode = true }) {
+                            Text("CODE")
+                        }
+                        TextButton(
+                            onClick = {
+                                firebaseReady = false
+                                store?.stop()
+                                store = null
+                                connectToRoom(roomCode)
+                            }
+                        ) {
                             Text(if (firebaseReady) "SYNC ON" else "SYNC…")
                         }
                     }
                 )
             },
             floatingActionButton = {
-                FloatingActionButton(onClick = { showAdd = true }) { Text("+") }
+                FloatingActionButton(onClick = { showAdd = true }) {
+                    Text("+")
+                }
             },
             bottomBar = {
                 NavigationBar {
-                    NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.Default.TableChart, contentDescription = "Tracker") }, label = { Text("Tracker") })
-                    NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = { Icon(Icons.Default.ReceiptLong, contentDescription = "Expenses") }, label = { Text("Expenses") })
-                    NavigationBarItem(selected = tab == 2, onClick = { tab = 2 }, icon = { Icon(Icons.Default.People, contentDescription = "People") }, label = { Text("People") })
-                    NavigationBarItem(selected = tab == 3, onClick = { tab = 3 }, icon = { Text("🍽️") }, label = { Text("Mess") })
+                    NavigationBarItem(
+                        selected = tab == 0,
+                        onClick = { tab = 0 },
+                        icon = {
+                            Icon(
+                                Icons.Default.TableChart,
+                                contentDescription = "Tracker"
+                            )
+                        },
+                        label = { Text("Tracker") }
+                    )
+                    NavigationBarItem(
+                        selected = tab == 1,
+                        onClick = { tab = 1 },
+                        icon = {
+                            Icon(
+                                Icons.Default.ReceiptLong,
+                                contentDescription = "Expenses"
+                            )
+                        },
+                        label = { Text("Expenses") }
+                    )
+                    NavigationBarItem(
+                        selected = tab == 2,
+                        onClick = { tab = 2 },
+                        icon = {
+                            Icon(
+                                Icons.Default.People,
+                                contentDescription = "People"
+                            )
+                        },
+                        label = { Text("People") }
+                    )
+                    NavigationBarItem(
+                        selected = tab == 3,
+                        onClick = { tab = 3 },
+                        icon = { Text("🍽️") },
+                        label = { Text("Mess") }
+                    )
                 }
             }
         ) { padding ->
             when (tab) {
-                0 -> TrackerScreen(Modifier.padding(padding), members, monthExpenses, showCar, onToggleCar = {
-                    showCar = !showCar
-                    prefs.edit().putBoolean("show_car_column", showCar).apply()
-                })
-                1 -> ExpensesScreen(Modifier.padding(padding), members, monthExpenses) { deletedExpense ->
+                0 -> TrackerScreen(
+                    Modifier.padding(padding),
+                    members,
+                    monthExpenses,
+                    showCar,
+                    onToggleCar = {
+                        showCar = !showCar
+                        prefs.edit()
+                            .putBoolean("show_car_column", showCar)
+                            .apply()
+                    }
+                )
+
+                1 -> ExpensesScreen(
+                    Modifier.padding(padding),
+                    members,
+                    monthExpenses
+                ) { deletedExpense ->
                     expenses = expenses.filterNot { it.id == deletedExpense.id }
-                    val deletedByName = members.firstOrNull { it.id == currentUserId }?.name ?: "Unknown"
-                    store?.deleteExpense(deletedExpense, currentUserId, deletedByName)
+                    val deletedByName =
+                        members.firstOrNull { it.id == currentUserId }?.name ?: "Unknown"
+                    store?.deleteExpense(
+                        deletedExpense,
+                        currentUserId,
+                        deletedByName
+                    )
                 }
-                2 -> PeopleScreen(Modifier.padding(padding), members) { updated ->
+
+                2 -> PeopleScreen(
+                    Modifier.padding(padding),
+                    members
+                ) { updated ->
                     members = updated
                     store?.saveMembers(updated)
                 }
-                else -> MessScreen(Modifier.padding(padding), members, messPayments, onAdd = { showAdd = true })
+
+                else -> MessScreen(
+                    Modifier.padding(padding),
+                    members,
+                    messPayments,
+                    currentUserId,
+                    onAdd = { showAdd = true },
+                    onDelete = { payment ->
+                        messPayments =
+                            messPayments.filterNot { it.id == payment.id }
+                        val deletedByName =
+                            members.firstOrNull { it.id == currentUserId }?.name ?: "Unknown"
+                        store?.deleteMessPayment(
+                            payment,
+                            currentUserId,
+                            deletedByName
+                        )
+                    }
+                )
             }
         }
 
         LaunchedEffect(deletionNotification) {
-        val message = deletionNotification ?: return@LaunchedEffect
-        snackbarHostState.showSnackbar(message)
-        deletionNotification = null
-    }
-
-    if (showAdd) {
-        if (tab == 3) {
-            AddMessDialog(
-                members = members,
-                onDismiss = { showAdd = false },
-                onSave = { date, amount, payerId ->
-                    val payment = MessPayment(System.currentTimeMillis(), date, amount, payerId)
-                    messPayments = (messPayments + payment).distinctBy { it.id }.sortedBy { it.id }
-                    store?.saveMessPayment(payment)
-                    showAdd = false
-                }
-            )
-        } else {
-            AddExpenseDialog(
-                members = members,
-                onDismiss = { showAdd = false },
-                onSave = { title, amount, payer, participants, category ->
-                    val finalParticipants = if (category == "Mess") participants else members.map { it.id }.toSet()
-                    val e = Expense(System.currentTimeMillis(), title, amount, payer, finalParticipants, month, category)
-                    expenses = (expenses + e).distinctBy { it.id }.sortedBy { it.id }
-                    store?.saveExpense(e)
-                    showAdd = false
-                }
-            )
+            val message = deletionNotification ?: return@LaunchedEffect
+            snackbarHostState.showSnackbar(message)
+            deletionNotification = null
         }
-    }
+
+        if (showAdd) {
+            if (tab == 3) {
+                val defaultMonth =
+                    remember { mutableStateOf(LocalDate.now().toString().substring(0, 7)) }
+
+                AddMessDialog(
+                    members = members,
+                    initialMonth = defaultMonth.value,
+                    onDismiss = { showAdd = false },
+                    onSave = { date, amount, payerId, selectedMonth ->
+                        val payment = MessPayment(
+                            id = System.currentTimeMillis(),
+                            date = date,
+                            amount = amount,
+                            payerId = payerId,
+                            month = selectedMonth
+                        )
+                        messPayments =
+                            (messPayments + payment)
+                                .distinctBy { it.id }
+                                .sortedBy { it.id }
+                        store?.saveMessPayment(payment)
+                        showAdd = false
+                    }
+                )
+            } else {
+                AddExpenseDialog(
+                    members = members,
+                    onDismiss = { showAdd = false },
+                    onSave = { title, amount, payer, participants, category ->
+                        val finalParticipants =
+                            if (category == "Rent" ||
+                                category == "Gas / Water" ||
+                                category == "Lottery"
+                            ) {
+                                members.map { it.id }.toSet()
+                            } else {
+                                participants
+                            }
+
+                        val finalPayer =
+                            if (category == "Rent" ||
+                                category == "Gas / Water" ||
+                                category == "Lottery"
+                            ) 0 else payer
+
+                        val e = Expense(
+                            System.currentTimeMillis(),
+                            title,
+                            amount,
+                            finalPayer,
+                            finalParticipants,
+                            month,
+                            category
+                        )
+
+                        expenses =
+                            (expenses + e)
+                                .distinctBy { it.id }
+                                .sortedBy { it.id }
+
+                        store?.saveExpense(e)
+                        showAdd = false
+                    }
+                )
+            }
+        }
 
         if (showCurrentUser) {
             AlertDialog(
@@ -746,27 +1056,50 @@ fun RoomExpenseApp(context: Context) {
                 title = { Text("👤 Who are you?") },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Select your name on this phone. Deletes from this phone will show this name to everyone.", fontSize = 13.sp)
+                        Text(
+                            "Select your name on this phone. Deletes from this phone will show this name to everyone.",
+                            fontSize = 13.sp
+                        )
                         members.forEach { member ->
                             Row(
-                                Modifier.fillMaxWidth().clickable {
-                                    currentUserId = member.id
-                                    prefs.edit().putInt("current_user_id_$roomCode", member.id).apply()
-                                    showCurrentUser = false
-                                }.padding(vertical = 6.dp),
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        currentUserId = member.id
+                                        prefs.edit()
+                                            .putInt(
+                                                "current_user_id_$roomCode",
+                                                member.id
+                                            )
+                                            .apply()
+                                        showCurrentUser = false
+                                    }
+                                    .padding(vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                RadioButton(selected = currentUserId == member.id, onClick = {
-                                    currentUserId = member.id
-                                    prefs.edit().putInt("current_user_id_$roomCode", member.id).apply()
-                                    showCurrentUser = false
-                                })
+                                RadioButton(
+                                    selected = currentUserId == member.id,
+                                    onClick = {
+                                        currentUserId = member.id
+                                        prefs.edit()
+                                            .putInt(
+                                                "current_user_id_$roomCode",
+                                                member.id
+                                            )
+                                            .apply()
+                                        showCurrentUser = false
+                                    }
+                                )
                                 Text(member.name)
                             }
                         }
                     }
                 },
-                confirmButton = { TextButton(onClick = { showCurrentUser = false }) { Text("Close") } }
+                confirmButton = {
+                    TextButton(onClick = { showCurrentUser = false }) {
+                        Text("Close")
+                    }
+                }
             )
         }
 
@@ -776,25 +1109,53 @@ fun RoomExpenseApp(context: Context) {
                 title = { Text("🏠 Household Code") },
                 text = {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Use this exact 6-digit code on the other phones:", textAlign = TextAlign.Center)
+                        Text(
+                            "Use this exact 6-digit code on the other phones:",
+                            textAlign = TextAlign.Center
+                        )
                         Spacer(Modifier.height(10.dp))
-                        Text(roomCode, fontSize = 32.sp, fontWeight = FontWeight.Bold, letterSpacing = 4.sp)
+                        Text(
+                            roomCode,
+                            fontSize = 32.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 4.sp
+                        )
                     }
                 },
-                confirmButton = { TextButton(onClick = { showRoomCode = false }) { Text("OK") } },
-                dismissButton = { TextButton(onClick = {
-                    showRoomCode = false
-                    store?.stop(); store = null
-                    prefs.edit().remove("room_code").apply()
-                    roomCode = ""
-                    codeInput = ""
-                    showRoomLogin = true
-                }) { Text("Change Code") } }
+                confirmButton = {
+                    TextButton(onClick = { showRoomCode = false }) {
+                        Text("OK")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showRoomCode = false
+                            store?.stop()
+                            store = null
+                            prefs.edit().remove("room_code").apply()
+                            roomCode = ""
+                            codeInput = ""
+                            showRoomLogin = true
+                        }
+                    ) {
+                        Text("Change Code")
+                    }
+                }
             )
         }
 
         errorText?.let { message ->
-            AlertDialog(onDismissRequest = { errorText = null }, title = { Text("Sync") }, text = { Text(message) }, confirmButton = { TextButton(onClick = { errorText = null }) { Text("OK") } })
+            AlertDialog(
+                onDismissRequest = { errorText = null },
+                title = { Text("Sync") },
+                text = { Text(message) },
+                confirmButton = {
+                    TextButton(onClick = { errorText = null }) {
+                        Text("OK")
+                    }
+                }
+            )
         }
     }
 }
@@ -815,60 +1176,200 @@ private fun TrackerScreen(
     BoxWithConstraints(modifier.fillMaxSize()) {
         val nameWidth = maxWidth * (nameWeight / totalWeight)
         val cellWidth = maxWidth * (cellWeight / totalWeight)
-        Column(Modifier.fillMaxSize().padding(horizontal = 2.dp, vertical = 1.dp)) {
-            Row(Modifier.fillMaxWidth().height(34.dp), verticalAlignment = Alignment.CenterVertically) {
+
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 2.dp, vertical = 1.dp)
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(34.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Column(Modifier.weight(1f)) {
-                    Text("HOUSEHOLD EXPENSE TRACKER", fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
-                    Text("${expenses.size} expense(s) • current month", fontSize = 8.sp, maxLines = 1)
+                    Text(
+                        "HOUSEHOLD EXPENSE TRACKER",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        maxLines = 1
+                    )
+                    Text(
+                        "${expenses.size} expense(s) • current month",
+                        fontSize = 8.sp,
+                        maxLines = 1
+                    )
                 }
-                TextButton(onClick = onToggleCar, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp), modifier = Modifier.height(28.dp)) {
-                    Text(if (showCar) "Hide Car" else "Car: Hidden", fontSize = 9.sp, maxLines = 1)
+                TextButton(
+                    onClick = onToggleCar,
+                    contentPadding = PaddingValues(
+                        horizontal = 4.dp,
+                        vertical = 0.dp
+                    ),
+                    modifier = Modifier.height(28.dp)
+                ) {
+                    Text(
+                        if (showCar) "Hide Car" else "Car: Hidden",
+                        fontSize = 9.sp,
+                        maxLines = 1
+                    )
                 }
             }
+
             Row(Modifier.fillMaxWidth().height(30.dp)) {
-                CompactHeaderCell("NAME", nameWidth, Color(0xFF123B70))
+                CompactHeaderCell(
+                    "NAME",
+                    nameWidth,
+                    Color(0xFF123B70)
+                )
                 for (category in visibleCategories) {
-                    CompactHeaderCell(category.replace("Gas / Water", "GAS /\nWATER").uppercase(), cellWidth, Color(0xFF123B70))
+                    CompactHeaderCell(
+                        category
+                            .replace("Gas / Water", "GAS /\nWATER")
+                            .uppercase(),
+                        cellWidth,
+                        Color(0xFF123B70)
+                    )
                 }
-                CompactHeaderCell("TOTAL", cellWidth, Color(0xFF0B7A3A))
+                CompactHeaderCell(
+                    "TOTAL",
+                    cellWidth,
+                    Color(0xFF0B7A3A)
+                )
             }
+
             for (member in members) {
                 Row(Modifier.fillMaxWidth().height(26.dp)) {
                     CompactNameCell(member.name, nameWidth)
                     for (category in visibleCategories) {
-                        CompactValueCell(categoryNet(expenses, member.id, category, members.map { it.id }.toSet()), cellWidth)
+                        CompactValueCell(
+                            categoryNet(
+                                expenses,
+                                member.id,
+                                category,
+                                members.map { it.id }.toSet()
+                            ),
+                            cellWidth
+                        )
                     }
-                    CompactValueCell(visibleCategories.sumOf { categoryNet(expenses, member.id, it, members.map { it.id }.toSet()) }, cellWidth, total = true)
+                    CompactValueCell(
+                        visibleCategories.sumOf {
+                            categoryNet(
+                                expenses,
+                                member.id,
+                                it,
+                                members.map { it.id }.toSet()
+                            )
+                        },
+                        cellWidth,
+                        total = true
+                    )
                 }
             }
+
             Row(Modifier.fillMaxWidth().height(26.dp)) {
-                CompactHeaderCell("TOTAL", nameWidth, Color(0xFFDDEBD5), Color.Black)
+                CompactHeaderCell(
+                    "TOTAL",
+                    nameWidth,
+                    Color(0xFFDDEBD5),
+                    Color.Black
+                )
                 for (category in visibleCategories) {
-                    CompactValueCell(members.sumOf { categoryNet(expenses, it.id, category, members.map { it.id }.toSet()) }, cellWidth, total = true)
+                    CompactValueCell(
+                        members.sumOf {
+                            categoryNet(
+                                expenses,
+                                it.id,
+                                category,
+                                members.map { m -> m.id }.toSet()
+                            )
+                        },
+                        cellWidth,
+                        total = true
+                    )
                 }
-                CompactValueCell(members.sumOf { member -> visibleCategories.sumOf { categoryNet(expenses, member.id, it, members.map { it.id }.toSet()) } }, cellWidth, total = true)
+                CompactValueCell(
+                    members.sumOf { member ->
+                        visibleCategories.sumOf {
+                            categoryNet(
+                                expenses,
+                                member.id,
+                                it,
+                                members.map { m -> m.id }.toSet()
+                            )
+                        }
+                    },
+                    cellWidth,
+                    total = true
+                )
             }
-            Text("Mess: equal split • whoever pays the mess bill gets that payment deducted from their total • Rent/Water/Gas/Lottery: fixed amount per person", fontSize = 8.sp, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
+
+            Text(
+                "Mess / Car / Other: equal split among selected members • payer gets payment deducted",
+                fontSize = 8.sp,
+                maxLines = 1,
+                modifier = Modifier.padding(top = 2.dp)
+            )
         }
     }
 }
 
 @Composable
-private fun CompactHeaderCell(text: String, width: androidx.compose.ui.unit.Dp, background: Color, textColor: Color = Color.White) {
-    Box(Modifier.width(width).height(30.dp).background(background).padding(1.dp), contentAlignment = Alignment.Center) {
-        Text(text, color = textColor, fontWeight = FontWeight.Bold, fontSize = 8.sp, lineHeight = 9.sp, textAlign = TextAlign.Center, maxLines = 2)
+private fun CompactHeaderCell(
+    text: String,
+    width: androidx.compose.ui.unit.Dp,
+    background: Color,
+    textColor: Color = Color.White
+) {
+    Box(
+        Modifier
+            .width(width)
+            .height(30.dp)
+            .background(background)
+            .padding(1.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text,
+            color = textColor,
+            fontWeight = FontWeight.Bold,
+            fontSize = 8.sp,
+            lineHeight = 9.sp,
+            textAlign = TextAlign.Center,
+            maxLines = 2
+        )
     }
 }
 
 @Composable
-private fun CompactNameCell(name: String, width: androidx.compose.ui.unit.Dp) {
-    Box(Modifier.width(width).height(26.dp).background(Color(0xFFEAF2F8)).padding(horizontal = 2.dp), contentAlignment = Alignment.CenterStart) {
-        Text(name, fontWeight = FontWeight.SemiBold, fontSize = 8.sp, maxLines = 1)
+private fun CompactNameCell(
+    name: String,
+    width: androidx.compose.ui.unit.Dp
+) {
+    Box(
+        Modifier
+            .width(width)
+            .height(26.dp)
+            .background(Color(0xFFEAF2F8))
+            .padding(horizontal = 2.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Text(
+            name,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 8.sp,
+            maxLines = 1
+        )
     }
 }
 
 @Composable
-private fun CompactValueCell(value: Double, width: androidx.compose.ui.unit.Dp, total: Boolean = false) {
+private fun CompactValueCell(
+    value: Double,
+    width: androidx.compose.ui.unit.Dp,
+    total: Boolean = false
+) {
     val positive = value > 0.005
     val negative = value < -0.005
     val textColor = when {
@@ -876,16 +1377,43 @@ private fun CompactValueCell(value: Double, width: androidx.compose.ui.unit.Dp, 
         positive && total -> Color(0xFF087A38)
         else -> Color.DarkGray
     }
-    Box(Modifier.width(width).height(26.dp).padding(1.dp), contentAlignment = Alignment.Center) {
-        Text(money(value), color = textColor, fontWeight = if (total) FontWeight.Bold else FontWeight.Normal, fontSize = 7.sp, maxLines = 1)
+
+    Box(
+        Modifier
+            .width(width)
+            .height(26.dp)
+            .padding(1.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            money(value),
+            color = textColor,
+            fontWeight = if (total) FontWeight.Bold else FontWeight.Normal,
+            fontSize = 7.sp,
+            maxLines = 1
+        )
     }
 }
 
 @Composable
-private fun ExpensesScreen(modifier: Modifier, members: List<Member>, expenses: List<Expense>, onDelete: (Expense) -> Unit) {
+private fun ExpensesScreen(
+    modifier: Modifier,
+    members: List<Member>,
+    expenses: List<Expense>,
+    onDelete: (Expense) -> Unit
+) {
     val names = members.associateBy { it.id }
-    LazyColumn(modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (expenses.isEmpty()) item { Text("No expenses this month. Tap + to add one.") }
+
+    LazyColumn(
+        modifier.fillMaxSize().padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (expenses.isEmpty()) {
+            item {
+                Text("No expenses this month. Tap + to add one.")
+            }
+        }
+
         items(expenses) { e ->
             Card(Modifier.fillMaxWidth()) {
                 Row(
@@ -893,25 +1421,59 @@ private fun ExpensesScreen(modifier: Modifier, members: List<Member>, expenses: 
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("${e.category} • ${e.title}", fontWeight = FontWeight.Bold)
-                        if (e.category == "Mess") {
-                            Text("${money(e.amount)} • paid by ${names[e.payerId]?.name ?: "Unknown"}")
-                            val participantIds = e.participants
+                        Text(
+                            "${e.category} • ${e.title}",
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        if (e.category == "Mess" ||
+                            e.category == "Car" ||
+                            e.category == "Other"
+                        ) {
+                            Text(
+                                "${money(e.amount)} • paid by ${
+                                    names[e.payerId]?.name ?: "Unknown"
+                                }"
+                            )
+
+                            val participantIds =
+                                if (e.participants.isNotEmpty())
+                                    e.participants
+                                else
+                                    members.map { it.id }.toSet()
+
                             if (participantIds.isEmpty()) {
                                 Text("Split: no members selected")
                             } else {
-                                val share = e.amount / participantIds.size
-                                Text("Split: " + participantIds.joinToString { id ->
-                                    "${names[id]?.name ?: "?"} ${money(share)}"
-                                })
+                                val share =
+                                    e.amount / participantIds.size.toDouble()
+                                Text(
+                                    "Split: " + participantIds.joinToString {
+                                        "${names[it]?.name ?: "?"} ${money(share)}"
+                                    }
+                                )
                             }
                         } else {
-                            Text("${money(e.amount)} • fixed amount per person • no payer")
-                            val participantIds = if (e.participants.isNotEmpty()) e.participants else members.map { it.id }.toSet()
-                            Text("Split: " + participantIds.joinToString { id -> names[id]?.name ?: "?" })
+                            Text(
+                                "${money(e.amount)} • fixed amount per person"
+                            )
+                            val participantIds =
+                                if (e.participants.isNotEmpty())
+                                    e.participants
+                                else
+                                    members.map { it.id }.toSet()
+
+                            Text(
+                                "Split: " + participantIds.joinToString {
+                                    names[it]?.name ?: "?"
+                                }
+                            )
                         }
                     }
-                    TextButton(onClick = { onDelete(e) }) { Text("Delete") }
+
+                    TextButton(onClick = { onDelete(e) }) {
+                        Text("Delete")
+                    }
                 }
             }
         }
@@ -919,56 +1481,255 @@ private fun ExpensesScreen(modifier: Modifier, members: List<Member>, expenses: 
 }
 
 @Composable
-private fun PeopleScreen(modifier: Modifier, members: List<Member>, onSave: (List<Member>) -> Unit) {
-    var names by remember(members) { mutableStateOf(members.associate { it.id to it.name }) }
-    var nextId by remember(members) { mutableIntStateOf((members.maxOfOrNull { it.id } ?: 0) + 1) }
+private fun PeopleScreen(
+    modifier: Modifier,
+    members: List<Member>,
+    onSave: (List<Member>) -> Unit
+) {
+    var names by remember(members) {
+        mutableStateOf(members.associate { it.id to it.name })
+    }
+    var nextId by remember(members) {
+        mutableIntStateOf((members.maxOfOrNull { it.id } ?: 0) + 1)
+    }
+
     Column(modifier.fillMaxSize().padding(16.dp)) {
-        Text("Room members", style = MaterialTheme.typography.headlineSmall)
+        Text(
+            "Room members",
+            style = MaterialTheme.typography.headlineSmall
+        )
         Spacer(Modifier.height(8.dp))
-        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+
+        LazyColumn(
+            Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             items(names.keys.toList()) { id ->
-                OutlinedTextField(value = names[id] ?: "", onValueChange = { names = names.toMutableMap().apply { put(id, it) } }, label = { Text("Person $id") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = names[id] ?: "",
+                    onValueChange = {
+                        names = names.toMutableMap().apply {
+                            put(id, it)
+                        }
+                    },
+                    label = { Text("Person $id") },
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { names = names.toMutableMap().apply { put(nextId, "Person $nextId") }; nextId++ }) { Text("Add person") }
-            Button(onClick = { onSave(names.map { Member(it.key, it.value.ifBlank { "Person ${it.key}" }) }) }) { Text("Save") }
+            OutlinedButton(
+                onClick = {
+                    names = names.toMutableMap().apply {
+                        put(nextId, "Person $nextId")
+                    }
+                    nextId++
+                }
+            ) {
+                Text("Add person")
+            }
+
+            Button(
+                onClick = {
+                    onSave(
+                        names.map {
+                            Member(
+                                it.key,
+                                it.value.ifBlank { "Person ${it.key}" }
+                            )
+                        }
+                    )
+                }
+            ) {
+                Text("Save")
+            }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MessScreen(
     modifier: Modifier,
     members: List<Member>,
     payments: List<MessPayment>,
-    onAdd: () -> Unit
+    currentUserId: Int,
+    onAdd: () -> Unit,
+    onDelete: (MessPayment) -> Unit
 ) {
     val names = members.associateBy { it.id }
-    val total = payments.sumOf { it.amount }
-    Column(modifier.fillMaxSize().padding(12.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("🍽️ Mess", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            Button(onClick = onAdd) { Text("+ Add Mess") }
-        }
-        Spacer(Modifier.height(8.dp))
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(14.dp)) {
-                Text("Total Mess", style = MaterialTheme.typography.labelLarge)
-                Text(money(total), fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    val months = remember(payments) { availableMessMonths(payments) }
+    var selectedMonth by remember(months) {
+        mutableStateOf(
+            months.firstOrNull()
+                ?: LocalDate.now().toString().substring(0, 7)
+        )
+    }
+    var monthExpanded by remember { mutableStateOf(false) }
+
+    val monthPayments = payments.filter {
+        (if (it.month.isNotBlank()) it.month else monthFromDate(it.date)) == selectedMonth
+    }
+
+    val total = monthPayments.sumOf { it.amount }
+    val personTotals = members.associate { member ->
+        member.id to monthPayments
+            .filter { it.payerId == member.id }
+            .sumOf { it.amount }
+    }
+
+    Column(
+        modifier.fillMaxSize().padding(12.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "🍽️ Mess",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Button(onClick = onAdd) {
+                Text("+ Add Mess")
             }
         }
+
+        Spacer(Modifier.height(8.dp))
+
+        ExposedDropdownMenuBox(
+            expanded = monthExpanded,
+            onExpandedChange = { monthExpanded = !monthExpanded }
+        ) {
+            OutlinedTextField(
+                value = monthLabel(selectedMonth),
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Mess Month") },
+                trailingIcon = {
+                    ExposedDropdownMenuDefaults.TrailingIcon(
+                        expanded = monthExpanded
+                    )
+                },
+                modifier = Modifier
+                    .menuAnchor()
+                    .fillMaxWidth()
+            )
+
+            ExposedDropdownMenu(
+                expanded = monthExpanded,
+                onDismissRequest = { monthExpanded = false }
+            ) {
+                months.forEach { m ->
+                    DropdownMenuItem(
+                        text = { Text(monthLabel(m)) },
+                        onClick = {
+                            selectedMonth = m
+                            monthExpanded = false
+                        }
+                    )
+                }
+            }
+        }
+
         Spacer(Modifier.height(10.dp))
-        if (payments.isEmpty()) {
-            Text("No Mess payments yet. Tap + Add Mess.", modifier = Modifier.padding(8.dp))
+
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp)) {
+                Text(
+                    "Total Mess • ${monthLabel(selectedMonth)}",
+                    style = MaterialTheme.typography.labelLarge
+                )
+                Text(
+                    money(total),
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        Text(
+            "Person-wise Mess Paid",
+            fontWeight = FontWeight.Bold,
+            fontSize = 18.sp
+        )
+
+        Spacer(Modifier.height(6.dp))
+
+        LazyColumn(
+            modifier = Modifier.heightIn(max = 230.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            items(members) { member ->
+                Card(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            member.name,
+                            modifier = Modifier.weight(1f),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            money(personTotals[member.id] ?: 0.0),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        Text(
+            "Payment History",
+            fontWeight = FontWeight.Bold,
+            fontSize = 18.sp
+        )
+
+        Spacer(Modifier.height(6.dp))
+
+        if (monthPayments.isEmpty()) {
+            Text("No Mess payments for ${monthLabel(selectedMonth)}.")
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(payments.reversed()) { p ->
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                items(monthPayments.sortedByDescending { it.id }) { p ->
                     Card(Modifier.fillMaxWidth()) {
-                        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(p.date, modifier = Modifier.weight(1.1f), fontWeight = FontWeight.SemiBold)
-                            Text(money(p.amount), modifier = Modifier.weight(0.8f), textAlign = TextAlign.End, fontWeight = FontWeight.Bold)
-                            Text(names[p.payerId]?.name ?: "Unknown", modifier = Modifier.weight(1f), textAlign = TextAlign.End)
+                        Row(
+                            Modifier.fillMaxWidth().padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    p.date,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    names[p.payerId]?.name ?: "Unknown",
+                                    fontSize = 13.sp
+                                )
+                            }
+
+                            Text(
+                                money(p.amount),
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            Spacer(Modifier.width(6.dp))
+
+                            TextButton(
+                                onClick = { onDelete(p) }
+                            ) {
+                                Text("Delete")
+                            }
                         }
                     }
                 }
@@ -981,56 +1742,186 @@ private fun MessScreen(
 @Composable
 private fun AddMessDialog(
     members: List<Member>,
+    initialMonth: String,
     onDismiss: () -> Unit,
-    onSave: (String, Double, Int) -> Unit
+    onSave: (String, Double, Int, String) -> Unit
 ) {
-    var date by remember { mutableStateOf(java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy"))) }
+    var date by remember {
+        mutableStateOf(
+            LocalDate.now().format(messDateFormatter)
+        )
+    }
     var amountText by remember { mutableStateOf("") }
-    var payer by remember { mutableIntStateOf(members.firstOrNull()?.id ?: 1) }
+    var payer by remember {
+        mutableIntStateOf(members.firstOrNull()?.id ?: 1)
+    }
     var payerExpanded by remember { mutableStateOf(false) }
+    var month by remember { mutableStateOf(initialMonth) }
+    var monthExpanded by remember { mutableStateOf(false) }
+
+    val monthOptions = remember {
+        val now = YearMonth.now()
+        (0..24).map { now.minusMonths(it.toLong()).toString() }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("➕ Add Mess") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(value = date, onValueChange = { date = it }, label = { Text("Date (dd.MM.yyyy)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = amountText, onValueChange = { amountText = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Amount (₹)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                ExposedDropdownMenuBox(expanded = payerExpanded, onExpandedChange = { payerExpanded = !payerExpanded }) {
-                    OutlinedTextField(value = members.firstOrNull { it.id == payer }?.name ?: "", onValueChange = {}, readOnly = true, label = { Text("Paid by") }, modifier = Modifier.menuAnchor().fillMaxWidth())
-                    ExposedDropdownMenu(expanded = payerExpanded, onDismissRequest = { payerExpanded = false }) {
-                        for (m in members) DropdownMenuItem(text = { Text(m.name) }, onClick = { payer = m.id; payerExpanded = false })
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
+                ExposedDropdownMenuBox(
+                    expanded = monthExpanded,
+                    onExpandedChange = {
+                        monthExpanded = !monthExpanded
+                    }
+                ) {
+                    OutlinedTextField(
+                        value = monthLabel(month),
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Mess Month") },
+                        modifier = Modifier
+                            .menuAnchor()
+                            .fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = monthExpanded,
+                        onDismissRequest = {
+                            monthExpanded = false
+                        }
+                    ) {
+                        monthOptions.forEach { m ->
+                            DropdownMenuItem(
+                                text = { Text(monthLabel(m)) },
+                                onClick = {
+                                    month = m
+                                    monthExpanded = false
+                                }
+                            )
+                        }
                     }
                 }
+
+                OutlinedTextField(
+                    value = date,
+                    onValueChange = { date = it },
+                    label = { Text("Date (dd.MM.yyyy)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = amountText,
+                    onValueChange = {
+                        amountText = it.filter { c ->
+                            c.isDigit() || c == '.'
+                        }
+                    },
+                    label = { Text("Amount (₹)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                ExposedDropdownMenuBox(
+                    expanded = payerExpanded,
+                    onExpandedChange = {
+                        payerExpanded = !payerExpanded
+                    }
+                ) {
+                    OutlinedTextField(
+                        value = members.firstOrNull { it.id == payer }?.name ?: "",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Paid by") },
+                        modifier = Modifier
+                            .menuAnchor()
+                            .fillMaxWidth()
+                    )
+
+                    ExposedDropdownMenu(
+                        expanded = payerExpanded,
+                        onDismissRequest = {
+                            payerExpanded = false
+                        }
+                    ) {
+                        for (m in members) {
+                            DropdownMenuItem(
+                                text = { Text(m.name) },
+                                onClick = {
+                                    payer = m.id
+                                    payerExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    "This Mess tab records the actual cash paid by the selected person. It is NOT split here.",
+                    fontSize = 12.sp
+                )
             }
         },
         confirmButton = {
-            Button(enabled = amountText.toDoubleOrNull()?.let { it > 0 } == true && payer != 0 && date.isNotBlank(), onClick = { onSave(date, amountText.toDouble(), payer) }) { Text("Save") }
+            Button(
+                enabled =
+                    amountText.toDoubleOrNull()?.let { it > 0 } == true &&
+                    payer != 0 &&
+                    date.isNotBlank() &&
+                    month.isNotBlank(),
+                onClick = {
+                    onSave(
+                        date,
+                        amountText.toDouble(),
+                        payer,
+                        month
+                    )
+                }
+            ) {
+                Text("Save")
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
     )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AddExpenseDialog(members: List<Member>, onDismiss: () -> Unit, onSave: (String, Double, Int, Set<Int>, String) -> Unit) {
+private fun AddExpenseDialog(
+    members: List<Member>,
+    onDismiss: () -> Unit,
+    onSave: (String, Double, Int, Set<Int>, String) -> Unit
+) {
     var title by remember { mutableStateOf("") }
     var amountText by remember { mutableStateOf("") }
-    var payer by remember { mutableIntStateOf(members.firstOrNull()?.id ?: 1) }
-    var selected by remember(members) { mutableStateOf(members.map { it.id }.toSet()) }
+    var payer by remember {
+        mutableIntStateOf(members.firstOrNull()?.id ?: 1)
+    }
+    var selected by remember(members) {
+        mutableStateOf(members.map { it.id }.toSet())
+    }
     var category by remember { mutableStateOf("Mess") }
     var categoryExpanded by remember { mutableStateOf(false) }
     var payerExpanded by remember { mutableStateOf(false) }
 
     LaunchedEffect(category, members) {
-        // Fixed expenses (Rent, Electricity, etc.) apply to everyone automatically.
-        // Mess keeps manual member selection because it can be split among selected people.
-        if (category != "Mess") {
+        if (category == "Rent" ||
+            category == "Gas / Water" ||
+            category == "Lottery"
+        ) {
             selected = members.map { it.id }.toSet()
         }
-        // IMPORTANT: for Mess, do not auto-reselect when the set becomes empty.
-        // This allows the user to unselect one, several, or all members.
-
     }
+
+    val splitCategory =
+        category == "Mess" || category == "Car" || category == "Other"
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1040,61 +1931,168 @@ private fun AddExpenseDialog(members: List<Member>, onDismiss: () -> Unit, onSav
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                ExposedDropdownMenuBox(expanded = categoryExpanded, onExpandedChange = { categoryExpanded = !categoryExpanded }) {
-                    OutlinedTextField(value = category, onValueChange = {}, readOnly = true, label = { Text("Category") }, modifier = Modifier.menuAnchor().fillMaxWidth())
-                    ExposedDropdownMenu(expanded = categoryExpanded, onDismissRequest = { categoryExpanded = false }) {
+                ExposedDropdownMenuBox(
+                    expanded = categoryExpanded,
+                    onExpandedChange = {
+                        categoryExpanded = !categoryExpanded
+                    }
+                ) {
+                    OutlinedTextField(
+                        value = category,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Category") },
+                        modifier = Modifier
+                            .menuAnchor()
+                            .fillMaxWidth()
+                    )
+
+                    ExposedDropdownMenu(
+                        expanded = categoryExpanded,
+                        onDismissRequest = {
+                            categoryExpanded = false
+                        }
+                    ) {
                         for (c in categories) {
-                            DropdownMenuItem(text = { Text(c) }, onClick = { category = c; categoryExpanded = false })
+                            DropdownMenuItem(
+                                text = { Text(c) },
+                                onClick = {
+                                    category = c
+                                    categoryExpanded = false
+                                }
+                            )
                         }
                     }
                 }
-                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Description (optional)") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = amountText, onValueChange = { amountText = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Amount (₹)") }, modifier = Modifier.fillMaxWidth())
-                if (category == "Mess") {
-                    ExposedDropdownMenuBox(expanded = payerExpanded, onExpandedChange = { payerExpanded = !payerExpanded }) {
-                        OutlinedTextField(value = members.firstOrNull { it.id == payer }?.name ?: "", onValueChange = {}, readOnly = true, label = { Text("Paid by") }, modifier = Modifier.menuAnchor().fillMaxWidth())
-                        ExposedDropdownMenu(expanded = payerExpanded, onDismissRequest = { payerExpanded = false }) {
+
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Description (optional)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = amountText,
+                    onValueChange = {
+                        amountText = it.filter { c ->
+                            c.isDigit() || c == '.'
+                        }
+                    },
+                    label = { Text("Amount (₹)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (splitCategory) {
+                    ExposedDropdownMenuBox(
+                        expanded = payerExpanded,
+                        onExpandedChange = {
+                            payerExpanded = !payerExpanded
+                        }
+                    ) {
+                        OutlinedTextField(
+                            value = members.firstOrNull { it.id == payer }?.name ?: "",
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Paid by") },
+                            modifier = Modifier
+                                .menuAnchor()
+                                .fillMaxWidth()
+                        )
+
+                        ExposedDropdownMenu(
+                            expanded = payerExpanded,
+                            onDismissRequest = {
+                                payerExpanded = false
+                            }
+                        ) {
                             for (m in members) {
-                                DropdownMenuItem(text = { Text(m.name) }, onClick = { payer = m.id; payerExpanded = false })
+                                DropdownMenuItem(
+                                    text = { Text(m.name) },
+                                    onClick = {
+                                        payer = m.id
+                                        payerExpanded = false
+                                    }
+                                )
                             }
                         }
                     }
-                    Text("Who shares this expense? (Mess is split equally)", fontWeight = FontWeight.SemiBold)
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = { selected = members.map { it.id }.toSet() }) { Text("Select all") }
-                        TextButton(onClick = { selected = emptySet() }) { Text("Clear all") }
-                        Text("Selected: ${selected.size}/${members.size}", modifier = Modifier.padding(top = 12.dp))
+
+                    Text(
+                        "Who shares this expense? (Equal split)",
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        TextButton(
+                            onClick = {
+                                selected = members.map { it.id }.toSet()
+                            }
+                        ) {
+                            Text("Select all")
+                        }
+
+                        TextButton(
+                            onClick = {
+                                selected = emptySet()
+                            }
+                        ) {
+                            Text("Clear all")
+                        }
                     }
+
+                    Text("Selected: ${selected.size}/${members.size}")
+
                     for (m in members) {
                         val isSelected = selected.contains(m.id)
                         Row(
                             Modifier
                                 .fillMaxWidth()
+                                .clickable {
+                                    selected =
+                                        if (isSelected) selected - m.id
+                                        else selected + m.id
+                                }
                                 .padding(vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Checkbox(
                                 checked = isSelected,
                                 onCheckedChange = { checked ->
-                                    selected = if (checked) {
-                                        selected + m.id
-                                    } else {
-                                        selected - m.id
-                                    }
+                                    selected =
+                                        if (checked) selected + m.id
+                                        else selected - m.id
                                 }
                             )
-                            Text(text = m.name, modifier = Modifier.weight(1f))
+                            Text(
+                                text = m.name,
+                                modifier = Modifier.weight(1f)
+                            )
                         }
                     }
                 } else {
-                    Text("Fixed amount per person • applies to all ${members.size} members", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Fixed amount per person • applies to all ${members.size} members",
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
+
                 val amount = amountText.toDoubleOrNull()
                 if (amount != null && amount > 0) {
                     Text(
-                        if (category == "Mess") {
-                            if (selected.isNotEmpty()) "Each share: ${money(amount / selected.size)}" else "No members selected"
-                        } else "Fixed amount per person: ${money(amount)}",
+                        when {
+                            splitCategory && selected.isNotEmpty() ->
+                                "Each share: ${money(amount / selected.size)}"
+
+                            splitCategory ->
+                                "No members selected"
+
+                            else ->
+                                "Fixed amount per person: ${money(amount)}"
+                        },
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -1102,10 +2100,26 @@ private fun AddExpenseDialog(members: List<Member>, onDismiss: () -> Unit, onSav
         },
         confirmButton = {
             Button(
-                enabled = amountText.toDoubleOrNull()?.let { it > 0 } == true,
-                onClick = { onSave(title.ifBlank { category }, amountText.toDouble(), if (category == "Mess") payer else 0, selected, category) }
-            ) { Text("Save Expense") }
+                enabled =
+                    amountText.toDoubleOrNull()?.let { it > 0 } == true &&
+                    (!splitCategory || selected.isNotEmpty()),
+                onClick = {
+                    onSave(
+                        title.ifBlank { category },
+                        amountText.toDouble(),
+                        if (splitCategory) payer else 0,
+                        selected,
+                        category
+                    )
+                }
+            ) {
+                Text("Save Expense")
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
     )
 }
