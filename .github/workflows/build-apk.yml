@@ -29,7 +29,7 @@ jobs:
 
       - name: Extract Android project
         run: |
-          unzip -o "RoomExpenseSplitter_WITH_MESS_TAB.zip" -d extracted
+          unzip -o "RoomExpenseSplitter_MESS_FIXED.zip" -d extracted
 
       - name: Update Android project
         run: |
