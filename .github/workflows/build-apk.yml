@@ -11,7 +11,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -28,54 +27,55 @@ jobs:
         run: |
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Find and Extract Android project
+      - name: Extract the new ZIP only
+        shell: bash
         run: |
-          echo "Looking for ZIP file..."
+          set -euo pipefail
 
-          ZIP=$(find . -maxdepth 1 -type f -iname "*.zip" | head -1)
+          ZIP="RoomExpense_App.zip"
 
-          if [ -z "$ZIP" ]; then
-            echo "ERROR: No ZIP file found in repository root."
-            echo "Repository files:"
-            ls -la
+          if [ ! -f "$ZIP" ]; then
+            echo "::error::Upload the new ZIP as RoomExpense_App.zip"
             exit 1
           fi
 
-          echo "Found ZIP: $ZIP"
+          SOURCE_DIR=$(mktemp -d "$RUNNER_TEMP/roomexpense.XXXXXX")
+          unzip -q "$ZIP" -d "$SOURCE_DIR"
 
-          unzip -o "$ZIP"
+          PROJECT_DIR="$SOURCE_DIR/RoomExpenseSplitter"
+          CODE_DIR="$PROJECT_DIR/app/src/main/java/com/example/roomexpensesplitter"
 
-          echo "Project extracted."
+          if [ ! -f "$CODE_DIR/MainActivityLock.kt" ]; then
+            echo "::error::This ZIP does not contain biometric lock."
+            exit 1
+          fi
 
-          find . -maxdepth 3 -type f | sort | head -200
+          if [ ! -f "$CODE_DIR/BillAttachment.kt" ]; then
+            echo "::error::This ZIP does not contain bill attachment."
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "New biometric and bill project selected."
 
       - name: Enable Compose
         run: |
           python3 - <<'PY'
+          import os
           from pathlib import Path
 
-          p = Path("RoomExpenseSplitter/app/build.gradle.kts")
+          p = Path(os.environ["PROJECT_DIR"]) / "app/build.gradle.kts"
+          s = p.read_text()
 
-          if p.exists():
-              s = p.read_text()
+          if "buildFeatures" not in s:
+              s = s.replace(
+                  "android {\n",
+                  "android {\n    buildFeatures {\n        compose = true\n    }\n",
+                  1
+              )
 
-              if "buildFeatures" not in s:
-                  s = s.replace(
-                      "android {\n",
-                      """android {
-              buildFeatures {
-                  compose = true
-              }
-
-          """,
-                      1
-                  )
-
-              p.write_text(s)
-              print("Compose configuration updated.")
-          else:
-              print("build.gradle.kts not found.")
-              exit(1)
+          p.write_text(s)
+          print("Compose enabled.")
           PY
 
       - name: Setup Gradle
@@ -83,12 +83,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build APK
+      - name: Build new APK
         run: |
-          gradle -p RoomExpenseSplitter assembleDebug --stacktrace
+          gradle -p "$PROJECT_DIR" assembleDebug --stacktrace
 
-      - name: Upload APK
+      - name: Upload new APK
         uses: actions/upload-artifact@v4
         with:
-          name: RoomExpenseSplitter-APK
-          path: RoomExpenseSplitter/app/build/outputs/apk/debug/app-debug.apk
+          name: RoomExpense-Biometric-Bills-${{ github.run_number }}
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
