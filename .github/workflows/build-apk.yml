@@ -32,10 +32,10 @@ jobs:
         run: |
           set -euo pipefail
 
-             ZIP="RoomExpense_V20.zip""
+          ZIP="RoomExpense_V20.zip"
 
           if [ ! -f "$ZIP" ]; then
-            echo "::error::Upload the new ZIP as RoomExpense_App.zip"
+            echo "::error::RoomExpense_V20.zip is missing. Upload it to the repository root."
             exit 1
           fi
 
@@ -45,20 +45,26 @@ jobs:
           PROJECT_DIR="$SOURCE_DIR/RoomExpenseSplitter"
           CODE_DIR="$PROJECT_DIR/app/src/main/java/com/example/roomexpensesplitter"
 
+          if [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+            echo "::error::Android project was not found inside the ZIP."
+            exit 1
+          fi
+
           if [ ! -f "$CODE_DIR/MainActivityLock.kt" ]; then
-            echo "::error::This ZIP does not contain biometric lock."
+            echo "::error::Biometric lock file is missing. Upload the new ZIP."
             exit 1
           fi
 
           if [ ! -f "$CODE_DIR/BillAttachment.kt" ]; then
-            echo "::error::This ZIP does not contain bill attachment."
+            echo "::error::Bill attachment file is missing. Upload the new ZIP."
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "New biometric and bill project selected."
+          echo "Biometric and bill project selected successfully."
 
       - name: Enable Compose
+        shell: bash
         run: |
           python3 - <<'PY'
           import os
@@ -84,6 +90,7 @@ jobs:
           gradle-version: '8.9'
 
       - name: Build new APK
+        shell: bash
         run: |
           gradle -p "$PROJECT_DIR" assembleDebug --stacktrace
 
