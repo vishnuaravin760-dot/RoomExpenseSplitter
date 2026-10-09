@@ -27,15 +27,15 @@ jobs:
         run: |
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Extract the new ZIP only
+      - name: Extract custom split project
         shell: bash
         run: |
           set -euo pipefail
 
-          ZIP="RoomExpense_Purple_Icon.zip"
+          ZIP="RoomExpense_CustomSplit_v2.zip"
 
           if [ ! -f "$ZIP" ]; then
-            echo "::error::RoomExpense_Purple_Icon.zip is missing. Upload it to the repository root."
+            echo "::error::RoomExpense_CustomSplit_v2.zip is missing. Upload it to the repository root."
             exit 1
           fi
 
@@ -51,17 +51,22 @@ jobs:
           fi
 
           if [ ! -f "$CODE_DIR/MainActivityLock.kt" ]; then
-            echo "::error::Biometric lock file is missing. Upload the new ZIP."
+            echo "::error::Biometric lock file is missing."
             exit 1
           fi
 
           if [ ! -f "$CODE_DIR/BillAttachment.kt" ]; then
-            echo "::error::Bill attachment file is missing. Upload the new ZIP."
+            echo "::error::Bill attachment file is missing."
+            exit 1
+          fi
+
+          if [ ! -f "$CODE_DIR/SplitLogic.kt" ]; then
+            echo "::error::Custom split file is missing. Upload the latest ZIP."
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Purple icon, biometric and bill project selected."
+          echo "Custom split project selected successfully."
 
       - name: Enable Compose
         shell: bash
@@ -89,14 +94,14 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build new APK
+      - name: Test and build new APK
         shell: bash
         run: |
-          gradle -p "$PROJECT_DIR" assembleDebug --stacktrace
+          gradle -p "$PROJECT_DIR" testDebugUnitTest assembleDebug --stacktrace
 
       - name: Upload new APK
         uses: actions/upload-artifact@v4
         with:
-          name: RoomExpense-Purple-Icon-${{ github.run_number }}
+          name: RoomExpense-CustomSplit-${{ github.run_number }}
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
