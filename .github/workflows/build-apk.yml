@@ -27,15 +27,15 @@ jobs:
         run: |
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Extract custom split project
+      - name: Extract screenshot fix project
         shell: bash
         run: |
           set -euo pipefail
 
-          ZIP="RoomExpense_CustomSplit_v2.zip"
+          ZIP="RoomExpense_Screenshot_Fix.zip"
 
           if [ ! -f "$ZIP" ]; then
-            echo "::error::RoomExpense_CustomSplit_v2.zip is missing. Upload it to the repository root."
+            echo "::error::RoomExpense_Screenshot_Fix.zip is missing. Upload it to the repository root."
             exit 1
           fi
 
@@ -61,12 +61,12 @@ jobs:
           fi
 
           if [ ! -f "$CODE_DIR/SplitLogic.kt" ]; then
-            echo "::error::Custom split file is missing. Upload the latest ZIP."
+            echo "::error::Custom split file is missing."
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Custom split project selected successfully."
+          echo "Screenshot fix and custom split project selected."
 
       - name: Enable Compose
         shell: bash
@@ -102,6 +102,6 @@ jobs:
       - name: Upload new APK
         uses: actions/upload-artifact@v4
         with:
-          name: RoomExpense-CustomSplit-${{ github.run_number }}
+          name: RoomExpense-Screenshot-Fix-${{ github.run_number }}
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
