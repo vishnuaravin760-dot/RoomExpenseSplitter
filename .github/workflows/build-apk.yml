@@ -32,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          ZIP="RoomExpense_App.zip"
+             ZIP="RoomExpense_V20.zip""
 
           if [ ! -f "$ZIP" ]; then
             echo "::error::Upload the new ZIP as RoomExpense_App.zip"
