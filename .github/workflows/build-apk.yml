@@ -32,10 +32,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          ZIP="RoomExpense_V20.zip"
+          ZIP="RoomExpense_Purple_Icon.zip"
 
           if [ ! -f "$ZIP" ]; then
-            echo "::error::RoomExpense_V20.zip is missing. Upload it to the repository root."
+            echo "::error::RoomExpense_Purple_Icon.zip is missing. Upload it to the repository root."
             exit 1
           fi
 
@@ -61,7 +61,7 @@ jobs:
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Biometric and bill project selected successfully."
+          echo "Purple icon, biometric and bill project selected."
 
       - name: Enable Compose
         shell: bash
@@ -97,6 +97,6 @@ jobs:
       - name: Upload new APK
         uses: actions/upload-artifact@v4
         with:
-          name: RoomExpense-Biometric-Bills-${{ github.run_number }}
+          name: RoomExpense-Purple-Icon-${{ github.run_number }}
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
