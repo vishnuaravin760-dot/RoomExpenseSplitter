@@ -1,0 +1,45 @@
+name: Create permanent signing key
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  create-key:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Generate key
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          keytool -genkeypair \
+            -keystore "$RUNNER_TEMP/room-debug.keystore" \
+            -storetype JKS \
+            -storepass android \
+            -keypass android \
+            -alias androiddebugkey \
+            -keyalg RSA \
+            -keysize 3072 \
+            -validity 10000 \
+            -dname "CN=Room Expenses"
+
+          base64 -w 0 "$RUNNER_TEMP/room-debug.keystore" \
+            > "$RUNNER_TEMP/signing-key.txt"
+
+      - name: Download key for Secret setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: signing-key-private
+          path: ${{ runner.temp }}/signing-key.txt
+          retention-days: 1
+          if-no-files-found: error
