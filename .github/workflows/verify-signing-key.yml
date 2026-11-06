@@ -1,0 +1,36 @@
+name: Verify Original APK Signing Key
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/verify-signing-key.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check signing key matches installed V18 release
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.ROOM_DEBUG_KEYSTORE_BASE64 }}
+          EXPECTED_SHA256: E161189977502F21E44D8692E5463F5F9F98C9B4BF000B4B1DF7952415F1A8D4
+        run: |
+          set -euo pipefail
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::Signing secret is not configured"
+            exit 1
+          fi
+          KEYSTORE="$(mktemp)"
+          trap 'rm -f "$KEYSTORE"' EXIT
+          printf '%s' "$SIGNING_KEY" | base64 --decode > "$KEYSTORE"
+          ACTUAL="$(keytool -exportcert -keystore "$KEYSTORE" -storepass android -alias androiddebugkey | sha256sum | awk '{print toupper($1)}')"
+          if [ "$ACTUAL" = "$EXPECTED_SHA256" ]; then
+            echo "MATCH: The configured signing key matches the original V18 release."
+          else
+            echo "::error::MISMATCH: The configured signing key does not match the original V18 release."
+            exit 1
+          fi
