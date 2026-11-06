@@ -1,3 +1,4 @@
+
 name: Build Room Expense Splitter APK
 
 on:
@@ -57,10 +58,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          ZIP="RoomExpense_Purple_Design_v21.zip"
+          ZIP="RoomExpense_Mess_History_v22.zip"
 
           if [ ! -f "$ZIP" ]; then
-            echo "::error::Upload RoomExpense_Purple_Design_v21.zip to the repository root."
+            echo "::error::Upload RoomExpense_Mess_History_v22.zip to the repository root."
             exit 1
           fi
 
